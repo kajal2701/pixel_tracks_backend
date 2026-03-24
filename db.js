@@ -1,19 +1,20 @@
-import { createConnection } from 'mysql2';
+import 'dotenv/config';
+import mysql from 'mysql2/promise';
 
-const connection = createConnection({
-  host: 'localhost',
-  user: 'root',
-  password: '', 
-  database: 'pixel_tracks_testing'
+const pool = mysql.createPool({
+  host:     process.env.DB_HOST,
+  user:     process.env.DB_USER,
+  database: process.env.DB_NAME,
+  password: process.env.DB_PASSWORD,
+  port:     process.env.DB_PORT,
 });
 
-connection.connect((err) => {
-  if (err) {
-    console.error('Error connecting to MySQL:', err.message);
-    return;
-  }
-  console.log('Connected to the XAMPP MySQL database!');
-});
+pool
+  .getConnection()
+  .then((conn) => {
+    console.log('✅ Database connected!');
+    conn.release();
+  })
+  .catch((err) => console.error('❌ Connection error', err));
 
-// Export the connection so other files can use it
-export default connection;
+export default pool;

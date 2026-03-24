@@ -1,10 +1,12 @@
 import express, { json } from 'express';
 import cors from 'cors';
-import { config } from 'dotenv';
+import 'dotenv/config';
 import db from './db.js';
+import customerRoutes from './routes/customers.js';
+import authRoutes from './routes/auth.js';
+import orderRoutes from './routes/orders.js';
+import adminRoutes from './routes/admin.js';
 
-// Load environment variables
-config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -18,6 +20,11 @@ app.get('/', (req, res) => {
   res.json({ message: 'Backend server is running!' });
 });
 
+
+app.use('/api/customers', customerRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/orders', orderRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {
