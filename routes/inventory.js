@@ -14,11 +14,12 @@ router.get('/', async (req, res) => {
   if (search) {
     conditions.push(`(
       supplier       LIKE ? OR
+      color_name     LIKE ? OR
       color_code     LIKE ? OR
       state          LIKE ?
     )`);
     const like = `%${search}%`;
-    params.push(like, like, like);
+    params.push(like, like, like, like);
   }
 
   if (inventory_type) { conditions.push('inventory_type = ?'); params.push(inventory_type); }
@@ -50,7 +51,7 @@ router.get('/:id', async (req, res) => {
 // ── POST /api/inventory ─────────────────────────────────────────
 router.post('/', async (req, res) => {
   const {
-    supplier, color_code, price, state, channel_length,
+    supplier, color_name, color_code, price, state, channel_length,
     inventory_type, size, quantity, possible_feet,
     hole_distance, pieces, length,
   } = req.body;
@@ -66,14 +67,15 @@ router.post('/', async (req, res) => {
 
   const sql = `
     INSERT INTO prixel_inventory
-      (supplier, color_code, price, state, channel_length,
+      (supplier, color_name, color_code, price, state, channel_length,
        inventory_type, size, quantity, possible_feet,
        hole_distance, pieces, length)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   const values = [
     supplier       ?? null,
+    color_name     ?? null,
     color_code     ?? null,
     price          ?? null,
     state          ?? null,
@@ -99,7 +101,7 @@ router.post('/', async (req, res) => {
 // ── PUT /api/inventory/:id ──────────────────────────────────────
 router.put('/:id', async (req, res) => {
   const {
-    supplier, color_code, price, state, channel_length,
+    supplier, color_name, color_code, price, state, channel_length,
     inventory_type, size, quantity, possible_feet,
     hole_distance, pieces, length,
   } = req.body;
@@ -115,6 +117,7 @@ router.put('/:id', async (req, res) => {
   const values = [];
 
   if (supplier        !== undefined) { fields.push('supplier = ?');        values.push(supplier); }
+  if (color_name      !== undefined) { fields.push('color_name = ?');      values.push(color_name); }
   if (color_code      !== undefined) { fields.push('color_code = ?');      values.push(color_code); }
   if (price           !== undefined) { fields.push('price = ?');           values.push(price); }
   if (state           !== undefined) { fields.push('state = ?');           values.push(state); }
