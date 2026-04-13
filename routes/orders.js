@@ -86,7 +86,8 @@ router.post('/', async (req, res) => {
   const {
     customer_id, channel_type, color, hole_distance,
     channel_length, total_length, total_pieces, final_length,
-    order_status, additional_notes, quick_access,
+    order_status, additional_notes, notes, quick_access,
+    delivery_method, pickup_location, pickup_date, delivery_address,
   } = req.body;
 
   if (!customer_id || !channel_type || !color || !hole_distance ||
@@ -95,6 +96,16 @@ router.post('/', async (req, res) => {
     return res.status(400).json({
       message: 'customer_id, channel_type, color, hole_distance, channel_length, total_length, total_pieces, and final_length are required.',
     });
+  }
+
+  if (!delivery_method || !['pickup', 'delivery'].includes(delivery_method)) {
+    return res.status(400).json({ message: 'delivery_method must be "pickup" or "delivery".' });
+  }
+  if (delivery_method === 'pickup' && !pickup_location) {
+    return res.status(400).json({ message: 'pickup_location is required when delivery_method is "pickup".' });
+  }
+  if (delivery_method === 'delivery' && !delivery_address) {
+    return res.status(400).json({ message: 'delivery_address is required when delivery_method is "delivery".' });
   }
 
   try {
@@ -107,16 +118,21 @@ router.post('/', async (req, res) => {
       INSERT INTO prixel_orders
         (order_id, customer_id, channel_type, color, hole_distance,
          channel_length, total_length, total_pieces, final_length,
+         delivery_method, pickup_location, pickup_date, delivery_address,
          order_status, additional_notes, quick_access)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const values = [
       order_id, customer_id, channel_type, color, hole_distance,
       channel_length, total_length, total_pieces, final_length,
-      order_status     ?? 'Pending',
-      additional_notes ?? null,
-      quick_access     ?? 'yes',
+      delivery_method,
+      delivery_method === 'pickup'   ? (pickup_location ?? null)   : null,
+      delivery_method === 'pickup'   ? (pickup_date     ?? null)   : null,
+      delivery_method === 'delivery' ? (delivery_address ?? null)  : null,
+      order_status                   ?? 'Pending',
+      notes ?? additional_notes      ?? null,
+      quick_access                   ?? 'yes',
     ];
 
     const [result] = await db.query(sql, values);
@@ -143,22 +159,28 @@ router.put('/:id', async (req, res) => {
   const {
     channel_type, color, hole_distance, channel_length,
     total_length, total_pieces, final_length,
-    order_status, additional_notes, quick_access,
+    order_status, additional_notes, notes, quick_access,
+    delivery_method, pickup_location, pickup_date, delivery_address,
   } = req.body;
 
   const fields = [];
   const values = [];
 
-  if (channel_type      !== undefined) { fields.push('channel_type = ?');      values.push(channel_type); }
-  if (color             !== undefined) { fields.push('color = ?');             values.push(color); }
-  if (hole_distance     !== undefined) { fields.push('hole_distance = ?');     values.push(hole_distance); }
-  if (channel_length    !== undefined) { fields.push('channel_length = ?');    values.push(channel_length); }
-  if (total_length      !== undefined) { fields.push('total_length = ?');      values.push(total_length); }
-  if (total_pieces      !== undefined) { fields.push('total_pieces = ?');      values.push(total_pieces); }
-  if (final_length      !== undefined) { fields.push('final_length = ?');      values.push(final_length); }
-  if (order_status      !== undefined) { fields.push('order_status = ?');      values.push(order_status); }
-  if (additional_notes  !== undefined) { fields.push('additional_notes = ?');  values.push(additional_notes); }
-  if (quick_access      !== undefined) { fields.push('quick_access = ?');      values.push(quick_access); }
+  if (channel_type       !== undefined) { fields.push('channel_type = ?');       values.push(channel_type); }
+  if (color              !== undefined) { fields.push('color = ?');              values.push(color); }
+  if (hole_distance      !== undefined) { fields.push('hole_distance = ?');      values.push(hole_distance); }
+  if (channel_length     !== undefined) { fields.push('channel_length = ?');     values.push(channel_length); }
+  if (total_length       !== undefined) { fields.push('total_length = ?');       values.push(total_length); }
+  if (total_pieces       !== undefined) { fields.push('total_pieces = ?');       values.push(total_pieces); }
+  if (final_length       !== undefined) { fields.push('final_length = ?');       values.push(final_length); }
+  if (delivery_method    !== undefined) { fields.push('delivery_method = ?');    values.push(delivery_method); }
+  if (pickup_location    !== undefined) { fields.push('pickup_location = ?');    values.push(pickup_location); }
+  if (pickup_date        !== undefined) { fields.push('pickup_date = ?');        values.push(pickup_date); }
+  if (delivery_address   !== undefined) { fields.push('delivery_address = ?');   values.push(delivery_address); }
+  if (order_status       !== undefined) { fields.push('order_status = ?');       values.push(order_status); }
+  if (notes              !== undefined) { fields.push('additional_notes = ?');   values.push(notes); }
+  else if (additional_notes !== undefined) { fields.push('additional_notes = ?'); values.push(additional_notes); }
+  if (quick_access       !== undefined) { fields.push('quick_access = ?');       values.push(quick_access); }
 
   if (fields.length === 0) {
     return res.status(400).json({ message: 'No fields provided to update.' });
