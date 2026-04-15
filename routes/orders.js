@@ -304,12 +304,12 @@ router.get('/:id/check-inventory', async (req, res) => {
       });
     }
 
-    // ── 3. Query matching inventory (same supplier + color_name) ──
+    // ── 3. Query matching inventory (same supplier + color_code) ──
     const [inventory] = await db.query(
       `SELECT * FROM prixel_inventory
        WHERE LOWER(TRIM(supplier)) = LOWER(TRIM(?))
-         AND LOWER(TRIM(color_name)) = LOWER(TRIM(?))`,
-      [parsed.supplier, parsed.colorName],
+         AND LOWER(TRIM(color_code)) = LOWER(TRIM(?))`,
+      [parsed.supplier, parsed.colorCode],
     );
 
     const orderPieceLength = parseFloat(channel_length) || 0;
