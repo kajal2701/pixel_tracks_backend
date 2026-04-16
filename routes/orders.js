@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import db from '../db.js';
+import inventoryService from '../services/inventoryService.js';
 
 const router = Router();
 
@@ -261,155 +262,32 @@ router.patch('/:id/notes', async (req, res) => {
 });
 
 // ── GET /api/orders/:id/check-inventory ─────────────────────────
-// Cascading inventory availability check:
-//   1. Ready Channel (same supplier, color, length) → count pieces
-//   2. Slitted       (same supplier, color)         → calculate pieces from material
-//   3. Full Roll     (same supplier, color)         → calculate pieces from material
 router.get('/:id/check-inventory', async (req, res) => {
   try {
-    // ── 1. Fetch the order ──
-    const [orders] = await db.query(
-      'SELECT * FROM prixel_orders WHERE id = ?',
-      [req.params.id],
-    );
-    if (orders.length === 0) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
+    const [orders] = await db.query('SELECT * FROM prixel_orders WHERE id = ?', [req.params.id]);
+    if (orders.length === 0) return res.status(404).json({ message: 'Order not found' });
 
-    const order = orders[0];
-    const { color, channel_length, total_pieces } = order;
-
-    if (!color || channel_length == null || !total_pieces) {
-      return res.status(400).json({
-        message: 'Order is missing required fields (color, channel_length, or total_pieces).',
-      });
-    }
-
-    // ── 2. Parse color string: "color_name (color_code) (supplier)" ──
-    const parsed = parseOrderColor(color);
-
-    if (!parsed.supplier || !parsed.colorName) {
-      return res.json({
-        data: {
-          isFullySatisfied: false,
-          error: 'Could not extract supplier or color from order color field.',
-          parsedColor: parsed,
-          orderQty: total_pieces,
-          readyUsed: 0, readyAvailable: 0,
-          slittedUsed: 0, slittedTotalFeet: 0, slittedPossiblePieces: 0,
-          fullRollUsed: 0, fullRollTotalFeet: 0, fullRollPossiblePieces: 0,
-          totalSatisfied: 0,
-          shortage: total_pieces,
-        },
-      });
-    }
-
-    // ── 3. Query matching inventory (same supplier + color_code) ──
-    const [inventory] = await db.query(
-      `SELECT * FROM prixel_inventory
-       WHERE LOWER(TRIM(supplier)) = LOWER(TRIM(?))
-         AND LOWER(TRIM(color_code)) = LOWER(TRIM(?))`,
-      [parsed.supplier, parsed.colorCode],
-    );
-
-    const orderPieceLength = parseFloat(channel_length) || 0;
-
-    if (orderPieceLength <= 0) {
-      return res.status(400).json({ message: `Invalid channel length: ${channel_length}` });
-    }
-
-    let remainingQty = total_pieces;
-
-    // ── Step 1: Ready Channel ──
-    let readyAvailable = 0;
-    inventory
-      .filter((i) => i.inventory_type === 'Ready Channel')
-      .forEach((item) => {
-        const itemLength = parseFloat(item.length) || 0;
-        if (itemLength === orderPieceLength) {
-          readyAvailable += parseInt(item.pieces, 10) || 0;
-        }
-      });
-    const readyUsed = Math.min(remainingQty, readyAvailable);
-    remainingQty -= readyUsed;
-
-    // ── Step 2: Slitted ──
-    let slittedTotalFeet = 0;
-    inventory
-      .filter((i) => i.inventory_type === 'Slitted')
-      .forEach((item) => {
-        const size = parseFloat(item.size) || 0;
-        const qty  = parseFloat(item.quantity) || 0;
-        slittedTotalFeet += size * qty;
-      });
-    const slittedPossiblePieces = Math.floor(slittedTotalFeet / orderPieceLength);
-    const slittedUsed = Math.min(remainingQty, slittedPossiblePieces);
-    remainingQty -= slittedUsed;
-
-    // ── Step 3: Full Roll ──
-    let fullRollTotalFeet = 0;
-    inventory
-      .filter((i) => i.inventory_type === 'Full Roll')
-      .forEach((item) => {
-        const size = parseFloat(item.size) || 0;
-        const qty  = parseFloat(item.quantity) || 0;
-        fullRollTotalFeet += size * qty;
-      });
-    const fullRollPossiblePieces = Math.floor(fullRollTotalFeet / orderPieceLength);
-    const fullRollUsed = Math.min(remainingQty, fullRollPossiblePieces);
-    remainingQty -= fullRollUsed;
-
-    // ── 4. Return result ──
-    res.json({
-      data: {
-        isFullySatisfied: remainingQty === 0,
-        error: null,
-        orderQty: total_pieces,
-        parsedColor: parsed,
-        readyUsed,
-        readyAvailable,
-        slittedUsed,
-        slittedTotalFeet: parseFloat(slittedTotalFeet.toFixed(2)),
-        slittedPossiblePieces,
-        fullRollUsed,
-        fullRollTotalFeet: parseFloat(fullRollTotalFeet.toFixed(2)),
-        fullRollPossiblePieces,
-        totalSatisfied: readyUsed + slittedUsed + fullRollUsed,
-        shortage: remainingQty,
-      },
-    });
+    const { color, channel_length, total_pieces } = orders[0];
+    const data = await inventoryService.calculateInventorySatisfaction(color, channel_length, total_pieces);
+    res.json({ data });
   } catch (err) {
-    res.status(500).json({ message: 'Failed to check inventory', error: err.message });
+    res.status(err.message.includes('Missing') || err.message.includes('Invalid') ? 400 : 500)
+       .json({ message: 'Failed to check inventory', error: err.message });
   }
 });
 
-// ── Helper: parse order color string ────────────────────────────
-// Format: "color_name (color_code) (supplier)"
-// e.g.    "red (RE-098) (xyz supplier)"
-function parseOrderColor(colorStr) {
-  if (!colorStr) return { colorName: '', colorCode: '', supplier: '' };
-
-  const parts = [];
-  let remaining = colorStr;
-
-  // Extract parenthesized groups from right to left
-  while (true) {
-    const match = remaining.match(/^(.*)\(([^)]+)\)\s*$/);
-    if (!match) break;
-    parts.unshift(match[2].trim());
-    remaining = match[1].trim();
+// ── POST /api/orders/check-inventory-preview ──────────────────────
+// For new orders (frontend check before saving)
+router.post('/check-inventory-preview', async (req, res) => {
+  try {
+    const { color, channel_length, total_pieces } = req.body;
+    const data = await inventoryService.calculateInventorySatisfaction(color, channel_length, total_pieces);
+    res.json({ data });
+  } catch (err) {
+    res.status(err.message.includes('Missing') || err.message.includes('Invalid') ? 400 : 500)
+       .json({ message: 'Failed to check inventory preview', error: err.message });
   }
-
-  const colorName = remaining.trim();
-
-  if (parts.length >= 2) {
-    return { colorName, colorCode: parts[0], supplier: parts[1] };
-  } else if (parts.length === 1) {
-    return { colorName, colorCode: '', supplier: parts[0] };
-  }
-
-  return { colorName, colorCode: '', supplier: '' };
-}
+});
 
 // ── DELETE /api/orders/:id ──────────────────────────────────────
 router.delete('/:id', async (req, res) => {

@@ -51,6 +51,20 @@ router.post('/', async (req, res) => {
   }
 
   try {
+    // Check for duplicate product (color_code + manufacturer combination)
+    if (color_code && manufacturer) {
+      const [existing] = await db.query(
+        'SELECT id FROM prixel_products WHERE color_code = ? AND manufacturer = ?',
+        [color_code, manufacturer]
+      );
+      if (existing.length > 0) {
+        return res.status(409).json({
+          message: 'Product with this color code and manufacturer already exists',
+          existingProductId: existing[0].id
+        });
+      }
+    }
+
     const sql = `
       INSERT INTO prixel_products (product_name, color, color_code, manufacturer, price, stock)
       VALUES (?, ?, ?, ?, ?, ?)
@@ -91,9 +105,23 @@ router.put('/:id', async (req, res) => {
     return res.status(400).json({ message: 'No fields provided to update.' });
   }
 
-  values.push(req.params.id);
-
   try {
+    // Check for duplicate product (color_code + manufacturer combination) when updating these fields
+    if ((color_code !== undefined || manufacturer !== undefined) && color_code && manufacturer) {
+      const [existing] = await db.query(
+        'SELECT id FROM prixel_products WHERE color_code = ? AND manufacturer = ? AND id != ?',
+        [color_code, manufacturer, req.params.id]
+      );
+      if (existing.length > 0) {
+        return res.status(409).json({
+          message: 'Product with this color code and manufacturer already exists',
+          existingProductId: existing[0].id
+        });
+      }
+    }
+
+    values.push(req.params.id);
+
     const [result] = await db.query(
       `UPDATE prixel_products SET ${fields.join(', ')} WHERE id = ?`,
       values,
