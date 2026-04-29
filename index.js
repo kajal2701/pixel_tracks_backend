@@ -8,6 +8,7 @@ import orderRoutes from './routes/orders.js';
 import adminRoutes from './routes/admin.js';
 import inventoryRoutes from './routes/inventory.js';
 import productRoutes from './routes/products.js';
+import productionRoutes from './routes/production.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -28,6 +29,7 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/products', productRoutes);
+app.use('/api/production', productionRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {

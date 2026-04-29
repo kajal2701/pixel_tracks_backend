@@ -98,31 +98,35 @@ async function findDuplicateForUpdate(id, payload) {
   return null;
 }
 
-// ── GET /api/inventory ──────────────────────────────────────────
 router.get('/', async (req, res) => {
   const { search, inventory_type, supplier, state } = req.query;
 
-  let sql = 'SELECT * FROM prixel_inventory';
+  let sql = `SELECT i.*,
+    COALESCE(SUM(CASE WHEN h.status = 'held' THEN h.held_quantity ELSE 0 END), 0) as held_quantity,
+    COALESCE(SUM(CASE WHEN h.status = 'held' THEN h.held_pieces ELSE 0 END), 0) as held_pieces,
+    GREATEST(0, i.quantity - COALESCE(SUM(CASE WHEN h.status = 'held' THEN h.held_quantity ELSE 0 END), 0)) as available_quantity
+   FROM prixel_inventory i
+   LEFT JOIN prixel_inventory_holds h ON i.id = h.inventory_id`;
   const params = [];
   const conditions = [];
 
   if (search) {
     conditions.push(`(
-      supplier       LIKE ? OR
-      color_name     LIKE ? OR
-      color_code     LIKE ? OR
-      state          LIKE ?
+      i.supplier       LIKE ? OR
+      i.color_name     LIKE ? OR
+      i.color_code     LIKE ? OR
+      i.state          LIKE ?
     )`);
     const like = `%${search}%`;
     params.push(like, like, like, like);
   }
 
-  if (inventory_type) { conditions.push('inventory_type = ?'); params.push(inventory_type); }
-  if (supplier)       { conditions.push('supplier = ?');       params.push(supplier); }
-  if (state)          { conditions.push('state = ?');          params.push(state); }
+  if (inventory_type) { conditions.push('i.inventory_type = ?'); params.push(inventory_type); }
+  if (supplier) { conditions.push('i.supplier = ?'); params.push(supplier); }
+  if (state) { conditions.push('i.state = ?'); params.push(state); }
 
   if (conditions.length > 0) sql += ' WHERE ' + conditions.join(' AND ');
-  sql += ' ORDER BY created_at DESC';
+  sql += ' GROUP BY i.id ORDER BY i.created_at DESC';
 
   try {
     const [results] = await db.query(sql, params);
@@ -169,19 +173,19 @@ router.post('/', async (req, res) => {
   `;
 
   const values = [
-    supplier       ?? null,
-    color_name     ?? null,
-    color_code     ?? null,
-    price          ?? null,
-    state          ?? null,
+    supplier ?? null,
+    color_name ?? null,
+    color_code ?? null,
+    price ?? null,
+    state ?? null,
     channel_length ?? null,
     inventory_type,
-    size           ?? null,
-    quantity       ?? null,
-    possible_feet  ?? null,
-    hole_distance  ?? '8/9 inch',
-    pieces         ?? null,
-    length         ?? null,
+    size ?? null,
+    quantity ?? null,
+    possible_feet ?? null,
+    hole_distance ?? '8',
+    pieces ?? null,
+    length ?? null,
   ];
 
   try {
@@ -236,19 +240,19 @@ router.put('/:id', async (req, res) => {
     const fields = [];
     const values = [];
 
-    if (supplier        !== undefined) { fields.push('supplier = ?');        values.push(supplier); }
-    if (color_name      !== undefined) { fields.push('color_name = ?');      values.push(color_name); }
-    if (color_code      !== undefined) { fields.push('color_code = ?');      values.push(color_code); }
-    if (price           !== undefined) { fields.push('price = ?');           values.push(price); }
-    if (state           !== undefined) { fields.push('state = ?');           values.push(state); }
-    if (channel_length  !== undefined) { fields.push('channel_length = ?');  values.push(channel_length); }
-    if (inventory_type  !== undefined) { fields.push('inventory_type = ?');  values.push(inventory_type); }
-    if (size            !== undefined) { fields.push('size = ?');            values.push(size); }
-    if (quantity        !== undefined) { fields.push('quantity = ?');        values.push(quantity); }
-    if (possible_feet   !== undefined) { fields.push('possible_feet = ?');   values.push(possible_feet); }
-    if (hole_distance   !== undefined) { fields.push('hole_distance = ?');   values.push(hole_distance); }
-    if (pieces          !== undefined) { fields.push('pieces = ?');          values.push(pieces); }
-    if (length          !== undefined) { fields.push('length = ?');          values.push(length); }
+    if (supplier !== undefined) { fields.push('supplier = ?'); values.push(supplier); }
+    if (color_name !== undefined) { fields.push('color_name = ?'); values.push(color_name); }
+    if (color_code !== undefined) { fields.push('color_code = ?'); values.push(color_code); }
+    if (price !== undefined) { fields.push('price = ?'); values.push(price); }
+    if (state !== undefined) { fields.push('state = ?'); values.push(state); }
+    if (channel_length !== undefined) { fields.push('channel_length = ?'); values.push(channel_length); }
+    if (inventory_type !== undefined) { fields.push('inventory_type = ?'); values.push(inventory_type); }
+    if (size !== undefined) { fields.push('size = ?'); values.push(size); }
+    if (quantity !== undefined) { fields.push('quantity = ?'); values.push(quantity); }
+    if (possible_feet !== undefined) { fields.push('possible_feet = ?'); values.push(possible_feet); }
+    if (hole_distance !== undefined) { fields.push('hole_distance = ?'); values.push(hole_distance); }
+    if (pieces !== undefined) { fields.push('pieces = ?'); values.push(pieces); }
+    if (length !== undefined) { fields.push('length = ?'); values.push(length); }
 
     if (fields.length === 0) {
       return res.status(400).json({ message: 'No fields provided to update.' });

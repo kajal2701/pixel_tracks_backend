@@ -44,7 +44,8 @@ router.get('/:id', async (req, res) => {
 
 // ── POST /api/products ───────────────────────────────────────────
 router.post('/', async (req, res) => {
-  const { product_name, color, color_code, manufacturer, price, stock } = req.body;
+  const { product_name, color, color_code, manufacturer, price, stock,
+          full_roll_length, slits_per_roll, slitted_roll_length } = req.body;
 
   if (!product_name || price == null) {
     return res.status(400).json({ message: 'product_name and price are required.' });
@@ -66,8 +67,9 @@ router.post('/', async (req, res) => {
     }
 
     const sql = `
-      INSERT INTO prixel_products (product_name, color, color_code, manufacturer, price, stock)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO prixel_products (product_name, color, color_code, manufacturer, price, stock,
+                                   full_roll_length, slits_per_roll, slitted_roll_length)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     const values = [
       product_name,
@@ -76,6 +78,9 @@ router.post('/', async (req, res) => {
       manufacturer ?? null,
       price,
       stock        ?? 0,
+      full_roll_length     ?? 98.00,
+      slits_per_roll       ?? 6,
+      slitted_roll_length  ?? 98.00,
     ];
 
     const [result] = await db.query(sql, values);
@@ -89,17 +94,21 @@ router.post('/', async (req, res) => {
 
 // ── PUT /api/products/:id ────────────────────────────────────────
 router.put('/:id', async (req, res) => {
-  const { product_name, color, color_code, manufacturer, price, stock } = req.body;
+  const { product_name, color, color_code, manufacturer, price, stock,
+          full_roll_length, slits_per_roll, slitted_roll_length } = req.body;
 
   const fields = [];
   const values = [];
 
-  if (product_name !== undefined) { fields.push('product_name = ?');  values.push(product_name); }
-  if (color        !== undefined) { fields.push('color = ?');         values.push(color); }
-  if (color_code   !== undefined) { fields.push('color_code = ?');    values.push(color_code); }
-  if (manufacturer !== undefined) { fields.push('manufacturer = ?');  values.push(manufacturer); }
-  if (price        !== undefined) { fields.push('price = ?');         values.push(price); }
-  if (stock        !== undefined) { fields.push('stock = ?');         values.push(stock); }
+  if (product_name         !== undefined) { fields.push('product_name = ?');         values.push(product_name); }
+  if (color                !== undefined) { fields.push('color = ?');                values.push(color); }
+  if (color_code           !== undefined) { fields.push('color_code = ?');           values.push(color_code); }
+  if (manufacturer         !== undefined) { fields.push('manufacturer = ?');         values.push(manufacturer); }
+  if (price                !== undefined) { fields.push('price = ?');                values.push(price); }
+  if (stock                !== undefined) { fields.push('stock = ?');                values.push(stock); }
+  if (full_roll_length     !== undefined) { fields.push('full_roll_length = ?');     values.push(full_roll_length); }
+  if (slits_per_roll       !== undefined) { fields.push('slits_per_roll = ?');       values.push(slits_per_roll); }
+  if (slitted_roll_length  !== undefined) { fields.push('slitted_roll_length = ?');  values.push(slitted_roll_length); }
 
   if (fields.length === 0) {
     return res.status(400).json({ message: 'No fields provided to update.' });
