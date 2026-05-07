@@ -152,7 +152,7 @@ router.post('/', async (req, res) => {
   const {
     supplier, color_name, color_code, price, state, channel_length,
     inventory_type, size, quantity, possible_feet,
-    hole_distance, pieces, length,
+    hole_distance, pieces, length, location,
   } = req.body;
 
   if (!inventory_type) {
@@ -168,8 +168,8 @@ router.post('/', async (req, res) => {
     INSERT INTO prixel_inventory
       (supplier, color_name, color_code, price, state, channel_length,
        inventory_type, size, quantity, possible_feet,
-       hole_distance, pieces, length)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       hole_distance, pieces, length, location)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   const values = [
@@ -186,6 +186,7 @@ router.post('/', async (req, res) => {
     hole_distance ?? '8',
     pieces ?? null,
     length ?? null,
+    location ?? 'Warehouse',
   ];
 
   try {
@@ -207,7 +208,7 @@ router.put('/:id', async (req, res) => {
   const {
     supplier, color_name, color_code, price, state, channel_length,
     inventory_type, size, quantity, possible_feet,
-    hole_distance, pieces, length,
+    hole_distance, pieces, length, location,
   } = req.body;
 
   if (inventory_type !== undefined) {
@@ -253,6 +254,7 @@ router.put('/:id', async (req, res) => {
     if (hole_distance !== undefined) { fields.push('hole_distance = ?'); values.push(hole_distance); }
     if (pieces !== undefined) { fields.push('pieces = ?'); values.push(pieces); }
     if (length !== undefined) { fields.push('length = ?'); values.push(length); }
+    if (location !== undefined) { fields.push('location = ?'); values.push(location); }
 
     if (fields.length === 0) {
       return res.status(400).json({ message: 'No fields provided to update.' });

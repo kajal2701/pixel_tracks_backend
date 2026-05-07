@@ -21,9 +21,11 @@ router.get('/', async (req, res) => {
         i.color_code      AS raw_material_color_code,
         i.supplier        AS raw_material_supplier,
         i.size            AS raw_material_size_available,
-        i.quantity         AS raw_material_qty_available
+        i.quantity         AS raw_material_qty_available,
+        u.username        AS assignee_name
       FROM prixel_production p
       LEFT JOIN prixel_inventory i ON i.id = p.raw_material_id
+      LEFT JOIN prixel_admin_users u ON u.id = p.assignee
       ORDER BY p.created_at DESC
     `);
     res.json({ data: rows });
@@ -40,9 +42,11 @@ router.get('/:id', async (req, res) => {
         i.inventory_type  AS raw_material_type,
         i.color_name      AS raw_material_color,
         i.color_code      AS raw_material_color_code,
-        i.supplier        AS raw_material_supplier
+        i.supplier        AS raw_material_supplier,
+        u.username        AS assignee_name
       FROM prixel_production p
       LEFT JOIN prixel_inventory i ON i.id = p.raw_material_id
+      LEFT JOIN prixel_admin_users u ON u.id = p.assignee
       WHERE p.id = ?
     `, [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ message: 'Production record not found' });
@@ -305,8 +309,8 @@ router.patch('/:id/status', async (req, res) => {
 
               if (leftoverSize > 0 && leftoverSize < currentSize) {
                 await db.query(
-                  `INSERT INTO prixel_inventory (supplier, color_name, color_code, inventory_type, quantity, size, state, hole_distance)
-                   SELECT supplier, color_name, color_code, inventory_type, 1, ?, state, hole_distance
+                  `INSERT INTO prixel_inventory (supplier, color_name, color_code, inventory_type, quantity, size, state, hole_distance, location)
+                   SELECT supplier, color_name, color_code, inventory_type, 1, ?, state, hole_distance, COALESCE(location, 'Warehouse')
                    FROM prixel_inventory WHERE id = ?`,
                   [parseFloat(leftoverSize.toFixed(2)), hold.inventory_id]
                 );
@@ -350,12 +354,26 @@ router.patch('/:id/status', async (req, res) => {
 
           if (outputPieces > 0) {
             let invIdToHold = null;
-            const [existingRows] = await db.query(
-              `SELECT id FROM prixel_inventory
-               WHERE inventory_type = ? AND color_name = ? AND color_code = ? AND supplier = ?
-               AND (length = ? OR size = ? OR size IS NULL OR size = 0) LIMIT 1`,
-              [targetType, raw.color_name, raw.color_code, raw.supplier, outputLength, outputLength]
-            );
+            let existingRows;
+            if (targetType === 'Ready Channel') {
+              // Ready Channel: match strictly by `length` column to avoid merging different sizes
+              [existingRows] = await db.query(
+                `SELECT id FROM prixel_inventory
+                 WHERE inventory_type = ? AND color_name = ? AND color_code = ? AND supplier = ?
+                 AND CAST(length AS DECIMAL(10,2)) = CAST(? AS DECIMAL(10,2))
+                 LIMIT 1`,
+                [targetType, raw.color_name, raw.color_code, raw.supplier, outputLength]
+              );
+            } else {
+              // Slitted / Full Roll: match by `size` column
+              [existingRows] = await db.query(
+                `SELECT id FROM prixel_inventory
+                 WHERE inventory_type = ? AND color_name = ? AND color_code = ? AND supplier = ?
+                 AND (size = ? OR size IS NULL OR size = 0)
+                 LIMIT 1`,
+                [targetType, raw.color_name, raw.color_code, raw.supplier, outputLength]
+              );
+            }
 
             if (existingRows.length > 0) {
               invIdToHold = existingRows[0].id;
@@ -371,16 +389,16 @@ router.patch('/:id/status', async (req, res) => {
             } else {
               if (targetType === 'Ready Channel') {
                 const [ins] = await db.query(
-                  `INSERT INTO prixel_inventory (supplier, color_name, color_code, inventory_type, pieces, length, hole_distance, state)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 'available')`,
+                  `INSERT INTO prixel_inventory (supplier, color_name, color_code, inventory_type, pieces, length, hole_distance, state, location)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'available', 'Warehouse')`,
                   [raw.supplier, raw.color_name, raw.color_code, targetType, outputPieces, outputLength,
                   chLen > 0 ? String(Math.round(chLen * 1.5)) : null]
                 );
                 invIdToHold = ins.insertId;
               } else {
                 const [ins] = await db.query(
-                  `INSERT INTO prixel_inventory (supplier, color_name, color_code, inventory_type, quantity, size, state)
-                   VALUES (?, ?, ?, ?, ?, ?, 'available')`,
+                  `INSERT INTO prixel_inventory (supplier, color_name, color_code, inventory_type, quantity, size, state, location)
+                   VALUES (?, ?, ?, ?, ?, ?, 'available', 'Warehouse')`,
                   [raw.supplier, raw.color_name, raw.color_code, targetType, outputPieces, outputLength]
                 );
                 invIdToHold = ins.insertId;
@@ -458,6 +476,26 @@ router.patch('/:id/status', async (req, res) => {
               }
             }
           }
+        }
+      }
+
+      // ── Auto-Ready: when all productions for an order are done ──
+      if (prod.production_type === 'Specific Order' && prod.order_id) {
+        const [pendingCheck] = await db.query(
+          `SELECT COUNT(*) as pending_count
+           FROM prixel_production
+           WHERE order_id = ?
+             AND status IN ('Pending', 'In Progress')`,
+          [prod.order_id]
+        );
+
+        if (pendingCheck[0].pending_count === 0) {
+          // All productions for this order are done → auto-mark Ready
+          await db.query(
+            `UPDATE prixel_orders SET order_status = 'Ready'
+             WHERE order_id = ? AND order_status = 'Awaiting production'`,
+            [prod.order_id]
+          );
         }
       }
     }

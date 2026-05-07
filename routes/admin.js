@@ -33,7 +33,12 @@ router.post('/login', async (req, res) => {
 
     const admin = results[0];
 
-    const hash    = normalizeWpHash(admin.password);
+    // Block inactive accounts
+    if (admin.status === 'inactive') {
+      return res.status(403).json({ message: 'Account is inactive. Contact a superadmin.' });
+    }
+
+    const hash = normalizeWpHash(admin.password);
     const isMatch = await bcrypt.compare(password, hash);
 
     if (!isMatch) {
@@ -54,19 +59,46 @@ router.post('/login', async (req, res) => {
 router.get('/users', async (req, res) => {
   try {
     const [results] = await db.query(
-      'SELECT id, username, email, role, quick_access, created_at, updated_at FROM prixel_admin_users ORDER BY created_at DESC',
+      "SELECT id, username, email, role, quick_access, status, created_at, updated_at FROM prixel_admin_users WHERE status = 'active' ORDER BY created_at DESC",
     );
     res.json({ data: results, total: results.length });
   } catch (err) {
-    res.status(500).json({ message: 'Failed to fetch admin users', error: err.message });
+    res.status(500).json({ message: 'Failed to fetch users', error: err.message });
+  }
+});
+
+// ── GET /api/admin/users/role/production-tech ──────────────────
+// Get only active production tech users
+router.get('/users/role/production-tech', async (req, res) => {
+  try {
+    const [results] = await db.query(
+      "SELECT id, username, email, role, status FROM prixel_admin_users WHERE role = 'production tech' AND status = 'active' ORDER BY username ASC",
+    );
+    res.json({ data: results });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch production tech users', error: err.message });
+  }
+});
+
+// ── GET /api/admin/users/:id ────────────────────────────────────
+router.get('/users/:id', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT id, username, email, role, quick_access, status, created_at, updated_at FROM prixel_admin_users WHERE id = ?',
+      [req.params.id],
+    );
+    if (rows.length === 0) return res.status(404).json({ message: 'User not found.' });
+    res.json({ data: rows[0] });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch user', error: err.message });
   }
 });
 
 // ── POST /api/admin/users ───────────────────────────────────────
 // Create a new admin user
-// Body: { username, password, email, role, quick_access }
+// Body: { username, password, email, role, quick_access, status }
 router.post('/users', async (req, res) => {
-  const { username, password, email, role, quick_access } = req.body;
+  const { username, password, email, role, quick_access, status } = req.body;
 
   if (!username || !password || !email) {
     return res.status(400).json({ message: 'username, password, and email are required.' });
@@ -76,37 +108,38 @@ router.post('/users', async (req, res) => {
     const hashed = await bcrypt.hash(password, 10);
 
     const [result] = await db.query(
-      'INSERT INTO prixel_admin_users (username, password, email, role, quick_access) VALUES (?, ?, ?, ?, ?)',
-      [username, hashed, email, role ?? 'admin', quick_access ?? 'yes'],
+      'INSERT INTO prixel_admin_users (username, password, email, role, quick_access, status) VALUES (?, ?, ?, ?, ?, ?)',
+      [username, hashed, email, role, quick_access ?? 'yes', status ?? 'active'],
     );
 
     const [rows] = await db.query(
-      'SELECT id, username, email, role, quick_access, created_at, updated_at FROM prixel_admin_users WHERE id = ?',
+      'SELECT id, username, email, role, quick_access, status, created_at, updated_at FROM prixel_admin_users WHERE id = ?',
       [result.insertId],
     );
 
-    res.status(201).json({ message: 'Admin user created successfully', data: rows[0] });
+    res.status(201).json({ message: 'User created successfully', data: rows[0] });
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({ message: 'Username already exists.' });
     }
-    res.status(500).json({ message: 'Failed to create admin user', error: err.message });
+    res.status(500).json({ message: 'Failed to create user', error: err.message });
   }
 });
 
 // ── PUT /api/admin/users/:id ────────────────────────────────────
 // Update admin user (partial update). Password is re-hashed if provided.
 router.put('/users/:id', async (req, res) => {
-  const { username, password, email, role, quick_access } = req.body;
+  const { username, password, email, role, quick_access, status } = req.body;
 
   const fields = [];
   const values = [];
 
-  if (username    !== undefined) { fields.push('username = ?');    values.push(username); }
-  if (email       !== undefined) { fields.push('email = ?');       values.push(email); }
-  if (role        !== undefined) { fields.push('role = ?');        values.push(role); }
+  if (username !== undefined) { fields.push('username = ?'); values.push(username); }
+  if (email !== undefined) { fields.push('email = ?'); values.push(email); }
+  if (role !== undefined) { fields.push('role = ?'); values.push(role); }
   if (quick_access !== undefined) { fields.push('quick_access = ?'); values.push(quick_access); }
-  if (password    !== undefined) {
+  if (status !== undefined) { fields.push('status = ?'); values.push(status); }
+  if (password !== undefined) {
     const hashed = await bcrypt.hash(password, 10);
     fields.push('password = ?');
     values.push(hashed);
@@ -123,29 +156,40 @@ router.put('/users/:id', async (req, res) => {
       `UPDATE prixel_admin_users SET ${fields.join(', ')} WHERE id = ?`,
       values,
     );
-    if (result.affectedRows === 0) return res.status(404).json({ message: 'Admin user not found.' });
+    if (result.affectedRows === 0) return res.status(404).json({ message: 'User not found.' });
 
     const [rows] = await db.query(
-      'SELECT id, username, email, role, quick_access, created_at, updated_at FROM prixel_admin_users WHERE id = ?',
+      'SELECT id, username, email, role, quick_access, status, created_at, updated_at FROM prixel_admin_users WHERE id = ?',
       [req.params.id],
     );
-    res.json({ message: 'Admin user updated successfully', data: rows[0] });
+    res.json({ message: 'User updated successfully', data: rows[0] });
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({ message: 'Username already exists.' });
     }
-    res.status(500).json({ message: 'Failed to update admin user', error: err.message });
+    res.status(500).json({ message: 'Failed to update user', error: err.message });
   }
 });
 
 // ── DELETE /api/admin/users/:id ─────────────────────────────────
 router.delete('/users/:id', async (req, res) => {
   try {
-    const [result] = await db.query('DELETE FROM prixel_admin_users WHERE id = ?', [req.params.id]);
-    if (result.affectedRows === 0) return res.status(404).json({ message: 'Admin user not found.' });
-    res.json({ message: 'Admin user deleted successfully' });
+    // Prevent self-deletion
+    const currentUserId = req.query.current_user_id;
+    if (currentUserId && parseInt(req.params.id) === parseInt(currentUserId)) {
+      return res.status(400).json({ message: 'Cannot delete your own account.' });
+    }
+
+    // Soft delete: set status to 'inactive' instead of actual deletion
+    const [result] = await db.query(
+      'UPDATE prixel_admin_users SET status = "inactive" WHERE id = ?',
+      [req.params.id]
+    );
+
+    if (result.affectedRows === 0) return res.status(404).json({ message: 'User not found.' });
+    res.json({ message: 'User deleted successfully' });
   } catch (err) {
-    res.status(500).json({ message: 'Failed to delete admin user', error: err.message });
+    res.status(500).json({ message: 'Failed to delete user', error: err.message });
   }
 });
 

@@ -57,8 +57,9 @@ router.get('/', async (req, res) => {
       confirmed: results.filter((o) => o.order_status === 'Confirmed').length,
       awaitingProduction: results.filter((o) => o.order_status === 'Awaiting production').length,
       awaitingMaterial: results.filter((o) => o.order_status === 'Awaiting material').length,
-      cancelled: results.filter((o) => o.order_status === 'Cancelled').length,
       ready: results.filter((o) => o.order_status === 'Ready').length,
+      readyForPickup: results.filter((o) => o.order_status === 'Ready for Pickup/Delivery').length,
+      cancelled: results.filter((o) => o.order_status === 'Cancelled').length,
     };
 
 
@@ -91,7 +92,7 @@ router.post('/', async (req, res) => {
   const {
     customer_id, channel_type, color, hole_distance,
     channel_length, total_length, total_pieces, final_length,
-    order_status, additional_notes, notes, quick_access,
+    order_status, additional_notes, notes, customer_notes, quick_access,
     delivery_method, pickup_location, pickup_date, delivery_address,
   } = req.body;
 
@@ -124,8 +125,8 @@ router.post('/', async (req, res) => {
         (order_id, customer_id, channel_type, color, hole_distance,
          channel_length, total_length, total_pieces, final_length,
          delivery_method, pickup_location, pickup_date, delivery_address,
-         order_status, additional_notes, quick_access)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         order_status, additional_notes, customer_notes, quick_access)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const values = [
@@ -133,10 +134,11 @@ router.post('/', async (req, res) => {
       channel_length, total_length, total_pieces, final_length,
       delivery_method,
       delivery_method === 'pickup' ? (pickup_location ?? null) : null,
-      delivery_method === 'pickup' ? (pickup_date ?? null) : null,
+      pickup_date ?? null,
       delivery_method === 'delivery' ? (delivery_address ?? null) : null,
       order_status ?? 'Pending',
-      notes ?? additional_notes ?? null,
+      additional_notes ?? null,
+      customer_notes ?? null,
       quick_access ?? 'yes',
     ];
 
@@ -164,7 +166,7 @@ router.put('/:id', async (req, res) => {
   const {
     channel_type, color, hole_distance, channel_length,
     total_length, total_pieces, final_length,
-    order_status, additional_notes, notes, quick_access,
+    order_status, additional_notes, notes, customer_notes, quick_access,
     delivery_method, pickup_location, pickup_date, delivery_address,
   } = req.body;
 
@@ -185,6 +187,7 @@ router.put('/:id', async (req, res) => {
   if (order_status !== undefined) { fields.push('order_status = ?'); values.push(order_status); }
   if (notes !== undefined) { fields.push('additional_notes = ?'); values.push(notes); }
   else if (additional_notes !== undefined) { fields.push('additional_notes = ?'); values.push(additional_notes); }
+  if (customer_notes !== undefined) { fields.push('customer_notes = ?'); values.push(customer_notes); }
   if (quick_access !== undefined) { fields.push('quick_access = ?'); values.push(quick_access); }
 
   if (fields.length === 0) {
@@ -241,13 +244,14 @@ router.post('/:id/confirm', async (req, res) => {
 
 // ── PATCH /api/orders/:id/status ────────────────────────────────
 router.patch('/:id/status', async (req, res) => {
-  const { order_status } = req.body;
+  const { order_status, dispatch_location } = req.body;
   const allowed = [
     'Pending',
     'Confirmed',
     'Awaiting production',
     'Awaiting material',
     'Ready',
+    'Ready for Pickup/Delivery',
     'Cancelled',
   ];
 
@@ -259,14 +263,29 @@ router.patch('/:id/status', async (req, res) => {
   }
 
   try {
-    const [result] = await db.query(
-      'UPDATE prixel_orders SET order_status = ? WHERE id = ?',
-      [order_status, req.params.id],
-    );
-    if (result.affectedRows === 0) return res.status(404).json({ message: 'Order not found' });
+    // If dispatching, also update the destination location on the order
+    if (order_status === 'Ready for Pickup/Delivery' && dispatch_location) {
+      const [orderCheck] = await db.query('SELECT delivery_method FROM prixel_orders WHERE id = ?', [req.params.id]);
+      if (orderCheck.length > 0) {
+        const method = orderCheck[0].delivery_method;
+        if (method === 'pickup') {
+          await db.query('UPDATE prixel_orders SET order_status = ?, pickup_location = ? WHERE id = ?',
+            [order_status, dispatch_location, req.params.id]);
+        } else {
+          await db.query('UPDATE prixel_orders SET order_status = ?, delivery_address = ? WHERE id = ?',
+            [order_status, dispatch_location, req.params.id]);
+        }
+      }
+    } else {
+      const [result] = await db.query(
+        'UPDATE prixel_orders SET order_status = ? WHERE id = ?',
+        [order_status, req.params.id],
+      );
+      if (result.affectedRows === 0) return res.status(404).json({ message: 'Order not found' });
+    }
 
-    // ── When marked Ready: permanently deduct inventory ──────────
-    if (order_status === 'Ready') {
+    // ── When marked Ready for Pickup/Delivery: permanently deduct inventory ──
+    if (order_status === 'Ready for Pickup/Delivery') {
       // Get the order's string order_id (e.g. ORD-xxx-x)
       const [orderRows] = await db.query('SELECT order_id FROM prixel_orders WHERE id = ?', [req.params.id]);
       if (orderRows.length > 0) {
@@ -304,7 +323,7 @@ router.patch('/:id/status', async (req, res) => {
               if (inv.length > 0) {
                 const currentSize = parseFloat(inv[0].size) || 0;
                 const currentQty = parseFloat(inv[0].quantity) || 1;
-                
+
                 if (currentQty === 1) {
                   const newSize = Math.max(0, currentSize - feetUsed);
                   const newQty = newSize <= 0 ? 0 : 1;
@@ -315,7 +334,7 @@ router.patch('/:id/status', async (req, res) => {
                     rollsTaken = Math.ceil(feetUsed / currentSize);
                   }
                   if (rollsTaken <= 0) rollsTaken = 1;
-                  
+
                   const totalFeetTaken = rollsTaken * currentSize;
                   const leftoverSize = totalFeetTaken - feetUsed;
 
@@ -324,8 +343,8 @@ router.patch('/:id/status', async (req, res) => {
 
                   if (leftoverSize > 0 && leftoverSize < currentSize) {
                     await db.query(
-                      `INSERT INTO prixel_inventory (supplier, color_name, color_code, inventory_type, quantity, size, state, hole_distance)
-                       SELECT supplier, color_name, color_code, inventory_type, 1, ?, state, hole_distance
+                      `INSERT INTO prixel_inventory (supplier, color_name, color_code, inventory_type, quantity, size, state, hole_distance, location)
+                       SELECT supplier, color_name, color_code, inventory_type, 1, ?, state, hole_distance, COALESCE(location, 'Warehouse')
                        FROM prixel_inventory WHERE id = ?`,
                       [parseFloat(leftoverSize.toFixed(2)), hold.inventory_id]
                     );
@@ -385,6 +404,34 @@ router.patch('/:id/notes', async (req, res) => {
     res.json({ message: 'Notes updated successfully' });
   } catch (err) {
     res.status(500).json({ message: 'Failed to update notes', error: err.message });
+  }
+});
+
+// ── PATCH /api/orders/:id/modification ──────────────────────────
+router.patch('/:id/modification', async (req, res) => {
+  const { modification_notes } = req.body;
+
+  if (!modification_notes || !modification_notes.trim()) {
+    return res.status(400).json({ message: 'modification_notes is required.' });
+  }
+
+  try {
+    const [result] = await db.query(
+      'UPDATE prixel_orders SET modification_notes = ?, order_status = ? WHERE id = ?',
+      [modification_notes.trim(), 'Pending', req.params.id],
+    );
+    if (result.affectedRows === 0) return res.status(404).json({ message: 'Order not found' });
+
+    const [rows] = await db.query(
+      `SELECT o.*, c.company_name, c.contact_name, c.email
+       FROM prixel_orders o
+       LEFT JOIN prixel_customers c ON c.id = o.customer_id
+       WHERE o.id = ?`,
+      [req.params.id],
+    );
+    res.json({ message: 'Modification requested successfully', data: rows[0] });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to save modification', error: err.message });
   }
 });
 
