@@ -166,7 +166,7 @@ router.put('/:id', async (req, res) => {
   const {
     channel_type, color, hole_distance, channel_length,
     total_length, total_pieces, final_length,
-    order_status, additional_notes, notes, customer_notes, quick_access,
+    order_status, additional_notes, customer_notes, quick_access,
     delivery_method, pickup_location, pickup_date, delivery_address,
   } = req.body;
 
@@ -185,8 +185,7 @@ router.put('/:id', async (req, res) => {
   if (pickup_date !== undefined) { fields.push('pickup_date = ?'); values.push(pickup_date); }
   if (delivery_address !== undefined) { fields.push('delivery_address = ?'); values.push(delivery_address); }
   if (order_status !== undefined) { fields.push('order_status = ?'); values.push(order_status); }
-  if (notes !== undefined) { fields.push('additional_notes = ?'); values.push(notes); }
-  else if (additional_notes !== undefined) { fields.push('additional_notes = ?'); values.push(additional_notes); }
+  if (additional_notes !== undefined) { fields.push('additional_notes = ?'); values.push(additional_notes); }
   if (customer_notes !== undefined) { fields.push('customer_notes = ?'); values.push(customer_notes); }
   if (quick_access !== undefined) { fields.push('quick_access = ?'); values.push(quick_access); }
 
@@ -225,6 +224,20 @@ router.post('/:id/confirm', async (req, res) => {
     const order = orders[0];
     const { color, channel_length, total_pieces } = order;
 
+    // ── Prevent duplicate holds on re-confirmation ──
+    // Release any existing 'held' records for this order before creating new ones
+    // (e.g., when re-confirming from "Awaiting material" status)
+    const [existingHolds] = await db.query(
+      `SELECT id FROM prixel_inventory_holds WHERE order_id = ? AND status = 'held' AND production_id IS NULL`,
+      [order.order_id]
+    );
+    if (existingHolds.length > 0) {
+      await db.query(
+        `UPDATE prixel_inventory_holds SET status = 'released' WHERE order_id = ? AND status = 'held' AND production_id IS NULL`,
+        [order.order_id]
+      );
+    }
+
     // Calculate how much inventory is immediately satisfied by Ready Channel
     const data = await inventoryService.calculateInventorySatisfaction(color, channel_length, total_pieces);
 
@@ -244,7 +257,7 @@ router.post('/:id/confirm', async (req, res) => {
 
 // ── PATCH /api/orders/:id/status ────────────────────────────────
 router.patch('/:id/status', async (req, res) => {
-  const { order_status, dispatch_location } = req.body;
+  const { order_status, dispatch_location, source_location } = req.body;
   const allowed = [
     'Pending',
     'Confirmed',
@@ -252,6 +265,7 @@ router.patch('/:id/status', async (req, res) => {
     'Awaiting material',
     'Ready',
     'Ready for Pickup/Delivery',
+    'Completed',
     'Cancelled',
   ];
 
@@ -269,11 +283,11 @@ router.patch('/:id/status', async (req, res) => {
       if (orderCheck.length > 0) {
         const method = orderCheck[0].delivery_method;
         if (method === 'pickup') {
-          await db.query('UPDATE prixel_orders SET order_status = ?, pickup_location = ? WHERE id = ?',
-            [order_status, dispatch_location, req.params.id]);
+          await db.query('UPDATE prixel_orders SET order_status = ?, pickup_location = ?, source_location = ? WHERE id = ?',
+            [order_status, dispatch_location, source_location || null, req.params.id]);
         } else {
-          await db.query('UPDATE prixel_orders SET order_status = ?, delivery_address = ? WHERE id = ?',
-            [order_status, dispatch_location, req.params.id]);
+          await db.query('UPDATE prixel_orders SET order_status = ?, delivery_address = ?, source_location = ? WHERE id = ?',
+            [order_status, dispatch_location, source_location || null, req.params.id]);
         }
       }
     } else {
@@ -284,14 +298,86 @@ router.patch('/:id/status', async (req, res) => {
       if (result.affectedRows === 0) return res.status(404).json({ message: 'Order not found' });
     }
 
-    // ── When marked Ready for Pickup/Delivery: permanently deduct inventory ──
+    // ── When dispatched: transfer inventory location for PICKUP only ──
+    // Smart transfer: check destination stock first, only move the remaining needed
     if (order_status === 'Ready for Pickup/Delivery') {
-      // Get the order's string order_id (e.g. ORD-xxx-x)
-      const [orderRows] = await db.query('SELECT order_id FROM prixel_orders WHERE id = ?', [req.params.id]);
+      const [orderRows] = await db.query('SELECT order_id, delivery_method, total_pieces FROM prixel_orders WHERE id = ?', [req.params.id]);
       if (orderRows.length > 0) {
-        const { order_id } = orderRows[0];
+        const { order_id, delivery_method, total_pieces } = orderRows[0];
+        const orderNeeded = parseInt(total_pieces) || 0;
 
-        // Fetch all active holds for this order, with inventory type
+        // Only transfer locations for pickup orders (product moves to pickup point)
+        // For delivery: no location change at dispatch (handled at Complete)
+        if (delivery_method === 'pickup' && dispatch_location) {
+          const [holds] = await db.query(
+            `SELECT h.*, i.inventory_type, i.location_stock FROM prixel_inventory_holds h
+             JOIN prixel_inventory i ON i.id = h.inventory_id
+             WHERE h.order_id = ? AND h.status = 'held' AND i.inventory_type = 'Ready Channel'`,
+            [order_id]
+          );
+
+          // 1. Calculate how many matching pieces already exist at the DESTINATION
+          let destPhysicalStock = 0;
+          for (const hold of holds) {
+            const stock = JSON.parse(hold.location_stock || '{}');
+            destPhysicalStock += parseInt(stock[dispatch_location]) || 0;
+          }
+
+          // 2. Subtract pieces held by OTHER dispatched orders at the destination
+          const [destHolds] = await db.query(
+            `SELECT COALESCE(SUM(h.held_pieces), 0) as held
+             FROM prixel_inventory_holds h
+             JOIN prixel_orders o ON o.order_id = h.order_id
+             WHERE h.status = 'held'
+               AND h.order_id != ?
+               AND o.pickup_location = ?
+               AND o.delivery_method = 'pickup'
+               AND o.order_status = 'Ready for Pickup/Delivery'`,
+            [order_id, dispatch_location]
+          );
+          const destHeldByOthers = parseInt(destHolds[0]?.held) || 0;
+
+          // 3. Available at destination = physical stock minus held by others
+          const destAvailable = Math.max(0, destPhysicalStock - destHeldByOthers);
+
+          // 4. Only transfer the remaining pieces needed
+          let needToTransfer = Math.max(0, orderNeeded - destAvailable);
+
+          for (const hold of holds) {
+            if (needToTransfer <= 0) break;
+            if ((hold.held_pieces || 0) <= 0) continue;
+
+            // Transfer only up to what is still needed
+            const piecesToMove = Math.min(hold.held_pieces || 0, needToTransfer);
+            needToTransfer -= piecesToMove;
+
+            const [invRows] = await db.query('SELECT location_stock FROM prixel_inventory WHERE id = ?', [hold.inventory_id]);
+            const stock = JSON.parse(invRows[0]?.location_stock || '{}');
+            const srcLoc = source_location || Object.keys(stock)[0] || 'Warehouse';
+
+            // Move only the needed pieces: source -X, destination +X
+            stock[srcLoc] = Math.max(0, (stock[srcLoc] || 0) - piecesToMove);
+            stock[dispatch_location] = (stock[dispatch_location] || 0) + piecesToMove;
+
+            await db.query(
+              'UPDATE prixel_inventory SET location_stock = ? WHERE id = ?',
+              [JSON.stringify(stock), hold.inventory_id]
+            );
+          }
+        }
+        // Holds stay 'held' — NOT marked as 'used' yet
+      }
+    }
+
+    // ── When marked Completed: permanently deduct inventory ──
+    if (order_status === 'Completed') {
+      const [orderRows] = await db.query(
+        'SELECT order_id, delivery_method, pickup_location, source_location FROM prixel_orders WHERE id = ?',
+        [req.params.id]
+      );
+      if (orderRows.length > 0) {
+        const { order_id, delivery_method, pickup_location } = orderRows[0];
+
         const [holds] = await db.query(
           `SELECT h.*, i.inventory_type FROM prixel_inventory_holds h
            JOIN prixel_inventory i ON i.id = h.inventory_id
@@ -302,11 +388,28 @@ router.patch('/:id/status', async (req, res) => {
         for (const hold of holds) {
           if (hold.inventory_type === 'Ready Channel') {
             if ((hold.held_pieces || 0) <= 0) continue;
-            // Ready Channel: deduct pieces directly
-            await db.query(
-              'UPDATE prixel_inventory SET pieces = GREATEST(0, pieces - ?) WHERE id = ?',
-              [hold.held_pieces, hold.inventory_id]
-            );
+
+            if (delivery_method === 'pickup' && pickup_location) {
+              // Pickup: deduct from pickup_location (where pieces were transferred to)
+              const [invRows] = await db.query('SELECT location_stock FROM prixel_inventory WHERE id = ?', [hold.inventory_id]);
+              const stock = JSON.parse(invRows[0]?.location_stock || '{}');
+              stock[pickup_location] = Math.max(0, (stock[pickup_location] || 0) - (hold.held_pieces || 0));
+              await db.query(
+                'UPDATE prixel_inventory SET pieces = GREATEST(0, pieces - ?), location_stock = ? WHERE id = ?',
+                [hold.held_pieces, JSON.stringify(stock), hold.inventory_id]
+              );
+            } else {
+              // Delivery: deduct from source_location in location_stock + reduce total pieces
+              const savedSource = orderRows[0].source_location;
+              const [invRows] = await db.query('SELECT location_stock FROM prixel_inventory WHERE id = ?', [hold.inventory_id]);
+              const stock = JSON.parse(invRows[0]?.location_stock || '{}');
+              const deductFrom = savedSource || Object.keys(stock)[0] || 'Warehouse';
+              stock[deductFrom] = Math.max(0, (stock[deductFrom] || 0) - (hold.held_pieces || 0));
+              await db.query(
+                'UPDATE prixel_inventory SET pieces = GREATEST(0, pieces - ?), location_stock = ? WHERE id = ?',
+                [hold.held_pieces, JSON.stringify(stock), hold.inventory_id]
+              );
+            }
           } else {
             // Slitted / Full Roll: deduct feet directly from held_feet
             let feetUsed = hold.held_feet || 0;
@@ -366,10 +469,19 @@ router.patch('/:id/status', async (req, res) => {
     if (order_status === 'Cancelled') {
       const [orderRows] = await db.query('SELECT order_id FROM prixel_orders WHERE id = ?', [req.params.id]);
       const orderId = orderRows[0]?.order_id;
+
+      // Release all held inventory holds
       await db.query(
         `UPDATE prixel_inventory_holds
          SET status = 'released'
          WHERE order_id = ? AND status = 'held'`,
+        [orderId],
+      );
+
+      // Cancel any linked production records
+      await db.query(
+        `UPDATE prixel_production SET status = 'Cancelled'
+         WHERE order_id = ? AND status IN ('Pending', 'In Progress')`,
         [orderId],
       );
     }
@@ -460,6 +572,88 @@ router.post('/check-inventory-preview', async (req, res) => {
   } catch (err) {
     res.status(err.message.includes('Missing') || err.message.includes('Invalid') ? 400 : 500)
       .json({ message: 'Failed to check inventory preview', error: err.message });
+  }
+});
+
+// ── GET /api/orders/:id/inventory-locations ──────────────────────
+// Returns per-location Ready Channel stock for the order's color/length
+router.get('/:id/inventory-locations', async (req, res) => {
+  try {
+    const [orders] = await db.query('SELECT * FROM prixel_orders WHERE id = ?', [req.params.id]);
+    if (orders.length === 0) return res.status(404).json({ message: 'Order not found' });
+
+    const order = orders[0];
+    // Parse color string: "color_name (color_code) (supplier)"
+    const colorParts = order.color.match(/^(.+?)\s*\(([^)]+)\)\s*\(([^)]+)\)\s*$/);
+    const colorCode = colorParts?.[2]?.trim() || '';
+    const supplier = colorParts?.[3]?.trim() || '';
+    const channelLength = parseFloat(order.channel_length) || 0;
+
+    // Find matching Ready Channel inventory
+    // Exclude current order's holds from held_pieces (its own reservation is available to it)
+    const [invRows] = await db.query(
+      `SELECT i.id, i.pieces, i.location_stock,
+         COALESCE(SUM(CASE WHEN h.status = 'held' AND h.order_id != ? THEN h.held_pieces ELSE 0 END), 0) as other_held_pieces,
+         COALESCE(SUM(CASE WHEN h.status = 'held' THEN h.held_pieces ELSE 0 END), 0) as total_held_pieces
+       FROM prixel_inventory i
+       LEFT JOIN prixel_inventory_holds h ON i.id = h.inventory_id
+       WHERE i.inventory_type = 'Ready Channel'
+         AND LOWER(TRIM(i.color_code)) = LOWER(TRIM(?))
+         AND LOWER(TRIM(i.supplier)) = LOWER(TRIM(?))
+         AND CAST(i.length AS DECIMAL(10,2)) = CAST(? AS DECIMAL(10,2))
+       GROUP BY i.id`,
+      [order.order_id, colorCode, supplier, channelLength]
+    );
+
+    // Show raw physical stock — transferred pieces already reflected in location_stock
+    // System-wide available (total - other_held) used for validation only
+    const result = [];
+    for (const inv of invRows) {
+      const stock = JSON.parse(inv.location_stock || '{}');
+      const otherHeld = parseInt(inv.other_held_pieces) || 0;
+      const totalPieces = parseInt(inv.pieces) || 0;
+
+      // Find pieces held at specific pickup locations by OTHER dispatched orders
+      const [locHolds] = await db.query(
+        `SELECT o.pickup_location, SUM(h.held_pieces) as held
+         FROM prixel_inventory_holds h
+         JOIN prixel_orders o ON o.order_id = h.order_id
+         WHERE h.inventory_id = ?
+           AND h.status = 'held'
+           AND h.order_id != ?
+           AND o.order_status = 'Ready for Pickup/Delivery'
+           AND o.delivery_method = 'pickup'
+         GROUP BY o.pickup_location`,
+        [inv.id, order.order_id]
+      );
+
+      // Build map of location → held pieces by dispatched orders
+      const locHeldMap = {};
+      for (const lh of locHolds) {
+        if (lh.pickup_location) {
+          locHeldMap[lh.pickup_location] = parseInt(lh.held) || 0;
+        }
+      }
+
+      for (const [location, pieces] of Object.entries(stock)) {
+        const rawPieces = parseInt(pieces) || 0;
+        // Subtract pieces held at this specific location by other dispatched orders
+        const heldAtLoc = locHeldMap[location] || 0;
+        const available = Math.max(0, rawPieces - heldAtLoc);
+
+        result.push({
+          inventory_id: inv.id,
+          location,
+          pieces: available,
+          total_pieces: totalPieces,
+          held_pieces: otherHeld,
+        });
+      }
+    }
+
+    res.json({ data: result });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch inventory locations', error: err.message });
   }
 });
 

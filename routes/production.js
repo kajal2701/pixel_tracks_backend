@@ -277,9 +277,18 @@ router.patch('/:id/status', async (req, res) => {
       for (const hold of holds) {
         if (hold.inventory_type === 'Ready Channel') {
           if ((hold.held_pieces || 0) <= 0) continue;
+          // Deduct pieces total + sync location_stock JSON
+          const [rcRows] = await db.query('SELECT location_stock FROM prixel_inventory WHERE id = ?', [hold.inventory_id]);
+          let rcStock = {};
+          try { rcStock = JSON.parse(rcRows[0]?.location_stock || '{}'); } catch (e) { rcStock = {}; }
+          // Deduct from Warehouse first (production happens at warehouse)
+          const deductKey = 'Warehouse';
+          if (rcStock[deductKey] !== undefined) {
+            rcStock[deductKey] = Math.max(0, rcStock[deductKey] - (hold.held_pieces || 0));
+          }
           await db.query(
-            'UPDATE prixel_inventory SET pieces = GREATEST(0, pieces - ?) WHERE id = ?',
-            [hold.held_pieces, hold.inventory_id]
+            'UPDATE prixel_inventory SET pieces = GREATEST(0, pieces - ?), location_stock = ? WHERE id = ?',
+            [hold.held_pieces, JSON.stringify(rcStock), hold.inventory_id]
           );
         } else {
           const feetUsed = hold.held_feet > 0 ? hold.held_feet : (hold.held_pieces || 0) * sizeNum;
@@ -356,9 +365,9 @@ router.patch('/:id/status', async (req, res) => {
             let invIdToHold = null;
             let existingRows;
             if (targetType === 'Ready Channel') {
-              // Ready Channel: match strictly by `length` column to avoid merging different sizes
+              // Ready Channel: match by color/type/length — location tracked via location_stock JSON
               [existingRows] = await db.query(
-                `SELECT id FROM prixel_inventory
+                `SELECT id, location_stock FROM prixel_inventory
                  WHERE inventory_type = ? AND color_name = ? AND color_code = ? AND supplier = ?
                  AND CAST(length AS DECIMAL(10,2)) = CAST(? AS DECIMAL(10,2))
                  LIMIT 1`,
@@ -378,7 +387,13 @@ router.patch('/:id/status', async (req, res) => {
             if (existingRows.length > 0) {
               invIdToHold = existingRows[0].id;
               if (targetType === 'Ready Channel') {
-                await db.query('UPDATE prixel_inventory SET pieces = pieces + ? WHERE id = ?', [outputPieces, invIdToHold]);
+                // Update pieces total + location_stock JSON
+                const existingStock = JSON.parse(existingRows[0].location_stock || '{}');
+                existingStock['Warehouse'] = (existingStock['Warehouse'] || 0) + outputPieces;
+                await db.query(
+                  'UPDATE prixel_inventory SET pieces = pieces + ?, location_stock = ? WHERE id = ?',
+                  [outputPieces, JSON.stringify(existingStock), invIdToHold]
+                );
               } else {
                 // Also restore size if it was depleted to 0
                 await db.query(
@@ -388,11 +403,12 @@ router.patch('/:id/status', async (req, res) => {
               }
             } else {
               if (targetType === 'Ready Channel') {
+                const locationStock = JSON.stringify({ 'Warehouse': outputPieces });
                 const [ins] = await db.query(
-                  `INSERT INTO prixel_inventory (supplier, color_name, color_code, inventory_type, pieces, length, hole_distance, state, location)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 'available', 'Warehouse')`,
+                  `INSERT INTO prixel_inventory (supplier, color_name, color_code, inventory_type, pieces, length, hole_distance, state, location, location_stock)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'available', 'Warehouse', ?)`,
                   [raw.supplier, raw.color_name, raw.color_code, targetType, outputPieces, outputLength,
-                  chLen > 0 ? String(Math.round(chLen * 1.5)) : null]
+                  chLen > 0 ? String(Math.round(chLen * 1.5)) : null, locationStock]
                 );
                 invIdToHold = ins.insertId;
               } else {

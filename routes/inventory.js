@@ -152,7 +152,7 @@ router.post('/', async (req, res) => {
   const {
     supplier, color_name, color_code, price, state, channel_length,
     inventory_type, size, quantity, possible_feet,
-    hole_distance, pieces, length, location,
+    hole_distance, pieces, length, location, location_stock,
   } = req.body;
 
   if (!inventory_type) {
@@ -164,12 +164,23 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ message: `inventory_type must be one of: ${validTypes.join(', ')}` });
   }
 
+  // Build location_stock JSON for Ready Channel
+  let locationStockValue = null;
+  if (inventory_type === 'Ready Channel' && pieces) {
+    if (location_stock) {
+      locationStockValue = typeof location_stock === 'string' ? location_stock : JSON.stringify(location_stock);
+    } else {
+      const loc = location || 'Warehouse';
+      locationStockValue = JSON.stringify({ [loc]: parseInt(pieces) || 0 });
+    }
+  }
+
   const sql = `
     INSERT INTO prixel_inventory
       (supplier, color_name, color_code, price, state, channel_length,
        inventory_type, size, quantity, possible_feet,
-       hole_distance, pieces, length, location)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       hole_distance, pieces, length, location, location_stock)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   const values = [
@@ -187,11 +198,42 @@ router.post('/', async (req, res) => {
     pieces ?? null,
     length ?? null,
     location ?? 'Warehouse',
+    locationStockValue,
   ];
 
   try {
     const duplicate = await findDuplicateForCreate(req.body);
     if (duplicate) {
+      // Ready Channel: merge new location into existing row's location_stock
+      if (inventory_type === 'Ready Channel' && pieces) {
+        const [existingRows] = await db.query('SELECT * FROM prixel_inventory WHERE id = ?', [duplicate.id]);
+        const existing = existingRows[0];
+        const stock = JSON.parse(existing.location_stock || '{}');
+        const loc = location || 'Warehouse';
+        const newPieces = parseInt(pieces) || 0;
+
+        // Replace (not add) the stock for this location
+        stock[loc] = newPieces;
+        // Recalculate total from all locations
+        const newTotal = Object.values(stock).reduce((sum, v) => sum + (parseInt(v) || 0), 0);
+
+        // Update price to latest value if provided
+        const updatePrice = price !== undefined && price !== null;
+        const updateSql = updatePrice
+          ? 'UPDATE prixel_inventory SET pieces = ?, location_stock = ?, price = ? WHERE id = ?'
+          : 'UPDATE prixel_inventory SET pieces = ?, location_stock = ? WHERE id = ?';
+        const updateVals = updatePrice
+          ? [newTotal, JSON.stringify(stock), price, duplicate.id]
+          : [newTotal, JSON.stringify(stock), duplicate.id];
+
+        await db.query(updateSql, updateVals);
+
+        const [rows] = await db.query('SELECT * FROM prixel_inventory WHERE id = ?', [duplicate.id]);
+        return res.status(200).json({
+          message: `Set ${newPieces} pcs at "${loc}" location (total: ${newTotal} pcs)`,
+          data: rows[0],
+        });
+      }
       return res.status(409).json({ message: DUPLICATE_MESSAGE });
     }
 
@@ -255,6 +297,32 @@ router.put('/:id', async (req, res) => {
     if (pieces !== undefined) { fields.push('pieces = ?'); values.push(pieces); }
     if (length !== undefined) { fields.push('length = ?'); values.push(length); }
     if (location !== undefined) { fields.push('location = ?'); values.push(location); }
+
+    // Sync location_stock JSON when pieces change for Ready Channel
+    const effectiveType = inventory_type !== undefined ? inventory_type : current.inventory_type;
+    if (effectiveType === 'Ready Channel') {
+      const { location_stock } = req.body;
+      if (location_stock !== undefined) {
+        const stockVal = typeof location_stock === 'string' ? location_stock : JSON.stringify(location_stock);
+        fields.push('location_stock = ?'); values.push(stockVal);
+      } else if (pieces !== undefined) {
+        // Update only the selected location in existing JSON, keep other locations
+        const existingStock = JSON.parse(current.location_stock || '{}');
+        const loc = (location !== undefined ? location : current.location) || 'Warehouse';
+        existingStock[loc] = parseInt(pieces) || 0;
+        fields.push('location_stock = ?'); values.push(JSON.stringify(existingStock));
+
+        // Recalculate total pieces from all locations
+        const newTotal = Object.values(existingStock).reduce((sum, v) => sum + (parseInt(v) || 0), 0);
+        // Override the pieces field with the recalculated total
+        const piecesIdx = fields.indexOf('pieces = ?');
+        if (piecesIdx !== -1) {
+          values[piecesIdx] = newTotal;
+        } else {
+          fields.push('pieces = ?'); values.push(newTotal);
+        }
+      }
+    }
 
     if (fields.length === 0) {
       return res.status(400).json({ message: 'No fields provided to update.' });
