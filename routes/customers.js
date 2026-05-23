@@ -43,16 +43,20 @@ router.get('/:id', async (req, res) => {
 
 // ── POST /api/customers ─────────────────────────────────────────
 router.post('/', async (req, res) => {
-  const { customer_number, company_name, contact_name, email, phone, status, access_code } = req.body;
+  const { customer_number, company_name, contact_name, email, phone, status, access_code, channel_pricing } = req.body;
 
   if (!customer_number || !company_name || !contact_name || !email || !phone) {
     return res.status(400).json({ message: 'customer_number, company_name, contact_name, email, and phone are required.' });
   }
 
+  // channel_pricing is a JSON object e.g. {"10h": 2.50, "9h": 2.75, "8h": 3.00}
+  // Store as JSON string in DB; mysql2 may auto-parse on read
+  const pricingJson = channel_pricing ? JSON.stringify(channel_pricing) : null;
+
   const sql = `
     INSERT INTO prixel_customers
-      (customer_number, company_name, contact_name, email, phone, status, access_code)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+      (customer_number, company_name, contact_name, email, phone, status, access_code, channel_pricing)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   const values = [
@@ -63,12 +67,18 @@ router.post('/', async (req, res) => {
     phone,
     status      ?? 'active',
     access_code ?? null,
+    pricingJson,
   ];
 
   try {
     const [result] = await db.query(sql, values);
     const [rows] = await db.query('SELECT * FROM prixel_customers WHERE id = ?', [result.insertId]);
-    res.status(201).json({ message: 'Customer created successfully', data: rows[0] });
+    // Parse channel_pricing back to object if stored as string
+    const customer = rows[0];
+    if (customer.channel_pricing && typeof customer.channel_pricing === 'string') {
+      customer.channel_pricing = JSON.parse(customer.channel_pricing);
+    }
+    res.status(201).json({ message: 'Customer created successfully', data: customer });
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({ message: 'Customer number or email already exists.' });
@@ -79,18 +89,23 @@ router.post('/', async (req, res) => {
 
 // ── PUT /api/customers/:id ──────────────────────────────────────
 router.put('/:id', async (req, res) => {
-  const { customer_number, company_name, contact_name, email, phone, status, access_code } = req.body;
+  const { customer_number, company_name, contact_name, email, phone, status, access_code, channel_pricing } = req.body;
 
   const fields = [];
   const values = [];
 
-  if (customer_number !== undefined) { fields.push('customer_number = ?'); values.push(customer_number); }
-  if (company_name    !== undefined) { fields.push('company_name = ?');    values.push(company_name); }
-  if (contact_name    !== undefined) { fields.push('contact_name = ?');    values.push(contact_name); }
-  if (email           !== undefined) { fields.push('email = ?');           values.push(email); }
-  if (phone           !== undefined) { fields.push('phone = ?');           values.push(phone); }
-  if (status          !== undefined) { fields.push('status = ?');          values.push(status); }
-  if (access_code     !== undefined) { fields.push('access_code = ?');     values.push(access_code); }
+  if (customer_number  !== undefined) { fields.push('customer_number = ?');  values.push(customer_number); }
+  if (company_name     !== undefined) { fields.push('company_name = ?');     values.push(company_name); }
+  if (contact_name     !== undefined) { fields.push('contact_name = ?');     values.push(contact_name); }
+  if (email            !== undefined) { fields.push('email = ?');            values.push(email); }
+  if (phone            !== undefined) { fields.push('phone = ?');            values.push(phone); }
+  if (status           !== undefined) { fields.push('status = ?');           values.push(status); }
+  if (access_code      !== undefined) { fields.push('access_code = ?');      values.push(access_code); }
+  if (channel_pricing  !== undefined) {
+    // Store as JSON string; accepts object or null
+    fields.push('channel_pricing = ?');
+    values.push(channel_pricing ? JSON.stringify(channel_pricing) : null);
+  }
 
   if (fields.length === 0) {
     return res.status(400).json({ message: 'No fields provided to update.' });
@@ -106,7 +121,11 @@ router.put('/:id', async (req, res) => {
     if (result.affectedRows === 0) return res.status(404).json({ message: 'Customer not found' });
 
     const [rows] = await db.query('SELECT * FROM prixel_customers WHERE id = ?', [req.params.id]);
-    res.json({ message: 'Customer updated successfully', data: rows[0] });
+    const customer = rows[0];
+    if (customer.channel_pricing && typeof customer.channel_pricing === 'string') {
+      customer.channel_pricing = JSON.parse(customer.channel_pricing);
+    }
+    res.json({ message: 'Customer updated successfully', data: customer });
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({ message: 'Customer number or email already exists.' });

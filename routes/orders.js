@@ -215,6 +215,29 @@ router.put('/:id', async (req, res) => {
   }
 });
 
+// ── PATCH /api/orders/:id/notes ─────────────────────────────────
+// Update admin notes from the Orders page notes dialog
+router.patch('/:id/notes', async (req, res) => {
+  const { additional_notes } = req.body;
+  try {
+    await db.query(
+      'UPDATE prixel_orders SET additional_notes = ? WHERE id = ?',
+      [additional_notes ?? null, req.params.id]
+    );
+    const [rows] = await db.query(
+      `SELECT o.*, c.company_name, c.contact_name, c.email
+       FROM prixel_orders o
+       LEFT JOIN prixel_customers c ON c.id = o.customer_id
+       WHERE o.id = ?`,
+      [req.params.id],
+    );
+    if (rows.length === 0) return res.status(404).json({ message: 'Order not found' });
+    res.json({ message: 'Notes updated', data: rows[0] });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to update notes', error: err.message });
+  }
+});
+
 // ── POST /api/orders/:id/confirm ────────────────────────────────
 router.post('/:id/confirm', async (req, res) => {
   try {

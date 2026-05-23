@@ -1,5 +1,7 @@
 import express, { json } from 'express';
 import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import 'dotenv/config';
 import db from './db.js';
 import customerRoutes from './routes/customers.js';
@@ -9,6 +11,10 @@ import adminRoutes from './routes/admin.js';
 import inventoryRoutes from './routes/inventory.js';
 import productRoutes from './routes/products.js';
 import productionRoutes from './routes/production.js';
+import invoiceRoutes from './routes/invoices.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -16,6 +22,7 @@ const PORT = process.env.PORT || 5000;
 // Middleware
 app.use(cors());
 app.use(json());
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Routes
 app.get('/', (req, res) => {
@@ -30,6 +37,8 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/production', productionRoutes);
+app.use('/api/invoices', invoiceRoutes);
+
 
 // Error handling middleware
 app.use((err, req, res, next) => {
