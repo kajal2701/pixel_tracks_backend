@@ -103,6 +103,7 @@ async function calculateInventorySatisfaction(color, channel_length, total_piece
 
   // ── Step 1: Ready Channel — match by length (float-safe) ──
   let readyAvailable = 0;
+  let readyHeld = 0;
   inventory
     .filter((i) => i.inventory_type === 'Ready Channel')
     .forEach((item) => {
@@ -111,23 +112,36 @@ async function calculateInventorySatisfaction(color, channel_length, total_piece
         const itemPieces = parseInt(item.pieces, 10) || 0;
         const heldPieces = parseInt(item.total_held_pieces, 10) || 0;
         readyAvailable += Math.max(0, itemPieces - heldPieces);
+        readyHeld += heldPieces;
       }
     });
   const readyUsed = Math.min(remainingQty, readyAvailable);
   remainingQty -= readyUsed;
 
-  // ── Step 2: Slitted — available feet = (qty × size) - held_feet ──
+  // ── Step 2: Slitted — pieces = floor(size / orderPieceLength) * qty ──
   let slittedTotalFeet = 0;
+  let slittedPossiblePieces = 0;
+  let slittedHeldPieces = 0;
   inventory
     .filter((i) => i.inventory_type === 'Slitted')
     .forEach((item) => {
       const size = parseFloat(item.size) || 0;
       const rawQty = parseFloat(item.quantity) || 0;
       const heldFeet = parseFloat(item.total_held_feet) || 0;
+      
       const totalFeet = size * rawQty;
-      slittedTotalFeet += Math.max(0, totalFeet - heldFeet);
+      const availableFeet = Math.max(0, totalFeet - heldFeet);
+      slittedTotalFeet += availableFeet;
+
+      if (size > 0) {
+        const piecesPerSlit = Math.floor(size / orderPieceLength);
+        const availableRolls = Math.floor(availableFeet / size);
+        const heldRolls = Math.floor(heldFeet / size);
+        
+        slittedPossiblePieces += availableRolls * piecesPerSlit;
+        slittedHeldPieces += heldRolls * piecesPerSlit;
+      }
     });
-  const slittedPossiblePieces = Math.floor(slittedTotalFeet / orderPieceLength);
   const slittedUsed = Math.min(remainingQty, slittedPossiblePieces);
   remainingQty -= slittedUsed;
 
@@ -138,6 +152,7 @@ async function calculateInventorySatisfaction(color, channel_length, total_piece
   const tracksPerFullRoll = tracksPerSlit * config.slits_per_roll; // e.g., 14 × 6 = 84
 
   let fullRollTotalFeet = 0;
+  let fullRollHeldFeet = 0;
   inventory
     .filter((i) => i.inventory_type === 'Full Roll')
     .forEach((item) => {
@@ -146,11 +161,13 @@ async function calculateInventorySatisfaction(color, channel_length, total_piece
       const heldFeet = parseFloat(item.total_held_feet) || 0;
       const totalFeet = size * rawQty;
       fullRollTotalFeet += Math.max(0, totalFeet - heldFeet);
+      fullRollHeldFeet += heldFeet;
     });
 
   // Calculate how many full rolls are actually available (as whole rolls)
   const fullRollsAvailable = Math.floor(fullRollTotalFeet / config.full_roll_length);
   const fullRollPossiblePieces = fullRollsAvailable * tracksPerFullRoll;
+  const fullRollHeldPieces = Math.floor(fullRollHeldFeet / config.full_roll_length) * tracksPerFullRoll;
   const fullRollUsed = Math.min(remainingQty, fullRollPossiblePieces);
   remainingQty -= fullRollUsed;
 
@@ -160,14 +177,19 @@ async function calculateInventorySatisfaction(color, channel_length, total_piece
     error: null,
     orderQty: total_pieces,
     parsedColor: parsed,
+    originalColor: color,
+    channelLength: orderPieceLength,
     readyUsed,
     readyAvailable,
+    readyHeld,
     slittedUsed,
     slittedTotalFeet: parseFloat(slittedTotalFeet.toFixed(2)),
     slittedPossiblePieces,
+    slittedHeldPieces,
     fullRollUsed,
     fullRollTotalFeet: parseFloat(fullRollTotalFeet.toFixed(2)),
     fullRollPossiblePieces,
+    fullRollHeldPieces,
     totalSatisfied: readyUsed + slittedUsed + fullRollUsed,
     shortage: remainingQty,
     // Include supplier config so callers can use it for production planning
@@ -294,8 +316,51 @@ async function holdOrderInventory(order_id, color, channel_length, needs, produc
   return heldItems;
 }
 
+async function getHoldsByColor(color, channel_length) {
+  const parsed = parseOrderColor(color);
+  const orderPieceLength = parseFloat(channel_length) || 0;
+
+  const query = `
+    SELECT 
+      h.id as hold_id,
+      h.held_pieces,
+      h.held_quantity,
+      h.held_feet,
+      i.inventory_type,
+      o.order_id,
+      o.order_status,
+      o.total_pieces as order_qty,
+      c.company_name,
+      c.contact_name,
+      p.production_type,
+      p.qty as production_qty,
+      p.status as production_status
+    FROM prixel_inventory_holds h
+    JOIN prixel_inventory i ON h.inventory_id = i.id
+    LEFT JOIN prixel_orders o ON h.order_id = o.order_id
+    LEFT JOIN prixel_customers c ON o.customer_id = c.id
+    LEFT JOIN prixel_production p ON h.production_id = p.id
+    WHERE h.status = 'held'
+      AND (? = '' OR LOWER(TRIM(i.supplier)) = LOWER(TRIM(?)))
+      AND (? = '' OR LOWER(TRIM(i.color_code)) = LOWER(TRIM(?)))
+      AND (
+        i.inventory_type IN ('Full Roll', 'Slitted') 
+        OR 
+        (i.inventory_type = 'Ready Channel' AND ABS(CAST(i.length AS DECIMAL(10,2)) - CAST(? AS DECIMAL(10,2))) < 0.02)
+      )
+  `;
+  
+  const [rows] = await db.query(query, [
+    parsed.supplier || '', parsed.supplier || '', 
+    parsed.colorCode || '', parsed.colorCode || '', 
+    orderPieceLength
+  ]);
+  return rows;
+}
+
 export default {
   calculateInventorySatisfaction,
   holdOrderInventory,
   getSupplierConfig,
+  getHoldsByColor,
 };

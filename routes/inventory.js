@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import db from '../db.js';
+import inventoryService from '../services/inventoryService.js';
 
 const router = Router();
 
@@ -133,6 +134,20 @@ router.get('/', async (req, res) => {
     res.json({ data: results, total: results.length });
   } catch (err) {
     res.status(500).json({ message: 'Failed to fetch inventory', error: err.message });
+  }
+});
+
+// ── GET /api/inventory/holds ────────────────────────────────────
+router.get('/holds', async (req, res) => {
+  try {
+    const { color, channel_length } = req.query;
+    if (!color || !channel_length) {
+      return res.status(400).json({ message: 'color and channel_length are required' });
+    }
+    const holds = await inventoryService.getHoldsByColor(color, channel_length);
+    res.json({ data: holds });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch holds', error: err.message });
   }
 });
 

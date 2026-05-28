@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import db from '../db.js';
+import { sendInvoiceSentEmail } from '../services/emailService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -362,6 +363,21 @@ router.patch('/:id/status', async (req, res) => {
     await db.query(query, params);
 
     const [updated] = await db.query('SELECT * FROM prixel_invoices WHERE id = ?', [req.params.id]);
+
+    // Send invoice email when status is changed to 'Sent'
+    if (status === 'Sent' && updated.length > 0) {
+      const invoice = updated[0];
+      const [customerRows] = await db.query(
+        'SELECT company_name, contact_name, email FROM prixel_customers WHERE id = ?',
+        [invoice.customer_id]
+      );
+      if (customerRows.length > 0 && customerRows[0].email) {
+        sendInvoiceSentEmail(invoice, customerRows[0]).catch((err) =>
+          console.error(`[MAIL] Failed to send invoice email for ${invoice.invoice_number}:`, err.message)
+        );
+      }
+    }
+
     res.json({ message: `Invoice status updated to ${status}`, data: updated[0] });
   } catch (err) {
     res.status(500).json({ message: 'Failed to update invoice status', error: err.message });

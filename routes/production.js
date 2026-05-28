@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import db from '../db.js';
 import inventoryService from '../services/inventoryService.js';
+import { sendProductionAssignedEmail } from '../services/emailService.js';
 
 const router = Router();
 
@@ -163,6 +164,29 @@ router.post('/', async (req, res) => {
     }
 
     const [rows] = await db.query('SELECT * FROM prixel_production WHERE id = ?', [production_id]);
+
+    // Send email to assigned tech (non-blocking)
+    if (assignee) {
+      const [techRows] = await db.query('SELECT id, username, email FROM prixel_admin_users WHERE id = ?', [assignee]);
+      if (techRows.length > 0 && techRows[0].email) {
+        let order = null;
+        if (production_type === 'Specific Order' && order_id) {
+          const [orderRows] = await db.query('SELECT * FROM prixel_orders WHERE order_id = ?', [order_id]);
+          if (orderRows.length > 0) order = orderRows[0];
+        }
+        // Pass raw material info for emails
+        const rawMaterialInfo = invRows.length > 0 ? {
+          inventory_type: invRows[0].inventory_type,
+          supplier: invRows[0].supplier,
+          color_name: invRows[0].color_name,
+          color_code: invRows[0].color_code,
+        } : null;
+        sendProductionAssignedEmail(rows[0], order, techRows[0], rawMaterialInfo).catch((err) =>
+          console.error(`[MAIL] Failed to send production assigned email:`, err.message)
+        );
+      }
+    }
+
     res.status(201).json({ message: 'Production record created successfully', data: rows[0] });
   } catch (err) {
     res.status(500).json({ message: 'Failed to create production record', error: err.message });
@@ -489,6 +513,27 @@ router.patch('/:id/status', async (req, res) => {
                    VALUES (?, ?, ?, 0, ?, ?, 'held')`,
                   [invIdToHold, prod.order_id, step2Id, slitsNeeded, holdFeet]
                 );
+
+                // Send email to tech for the newly auto-generated Step 2 task (non-blocking)
+                if (prod.assignee) {
+                  const [techRows] = await db.query('SELECT id, username, email FROM prixel_admin_users WHERE id = ?', [prod.assignee]);
+                  if (techRows.length > 0 && techRows[0].email) {
+                    const [step2ProdRows] = await db.query('SELECT * FROM prixel_production WHERE id = ?', [step2Id]);
+                    const [orderRows2] = await db.query('SELECT * FROM prixel_orders WHERE order_id = ?', [prod.order_id]);
+                    const order2 = orderRows2.length > 0 ? orderRows2[0] : null;
+                    
+                    const step2RawMaterialInfo = {
+                      inventory_type: 'Slitted',
+                      supplier: raw.supplier,
+                      color_name: raw.color_name,
+                      color_code: raw.color_code
+                    };
+                    
+                    sendProductionAssignedEmail(step2ProdRows[0], order2, techRows[0], step2RawMaterialInfo).catch((err) =>
+                      console.error(`[MAIL] Failed to send Step 2 production assigned email:`, err.message)
+                    );
+                  }
+                }
               }
             }
           }
@@ -648,6 +693,24 @@ router.post('/request', async (req, res) => {
 
       const [rows] = await db.query('SELECT * FROM prixel_production WHERE id = ?', [production_id]);
       created.push(rows[0]);
+    }
+
+    // Send email to assigned tech for each created production (non-blocking)
+    if (assignee && created.length > 0) {
+      const [techRows] = await db.query('SELECT id, username, email FROM prixel_admin_users WHERE id = ?', [assignee]);
+      if (techRows.length > 0 && techRows[0].email) {
+        for (const prod of created) {
+          // Fetch raw material info for the email
+          let rawMaterialInfo = null;
+          if (prod.raw_material_id) {
+            const [matRows] = await db.query('SELECT inventory_type, supplier, color_name, color_code FROM prixel_inventory WHERE id = ?', [prod.raw_material_id]);
+            if (matRows.length > 0) rawMaterialInfo = matRows[0];
+          }
+          sendProductionAssignedEmail(prod, order, techRows[0], rawMaterialInfo).catch((err) =>
+            console.error(`[MAIL] Failed to send production assigned email:`, err.message)
+          );
+        }
+      }
     }
 
     res.status(201).json({

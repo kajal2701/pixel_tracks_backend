@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import db from '../db.js';
 import inventoryService from '../services/inventoryService.js';
+import { sendOrderModifiedEmail } from '../services/emailService.js';
 
 const router = Router();
 
@@ -544,16 +545,36 @@ router.patch('/:id/notes', async (req, res) => {
 
 // ── PATCH /api/orders/:id/modification ──────────────────────────
 router.patch('/:id/modification', async (req, res) => {
-  const { modification_notes } = req.body;
-
-  if (!modification_notes || !modification_notes.trim()) {
-    return res.status(400).json({ message: 'modification_notes is required.' });
-  }
+  const { modification_notes, pickup_date, pickup_location } = req.body;
 
   try {
+    const fieldsToUpdate = [];
+    const values = [];
+
+    if (modification_notes !== undefined) {
+      fieldsToUpdate.push('modification_notes = ?');
+      values.push(modification_notes ? modification_notes.trim() : null);
+    }
+
+    if (pickup_date !== undefined) {
+      fieldsToUpdate.push('pickup_date = ?');
+      values.push(pickup_date || null);
+    }
+
+    if (pickup_location !== undefined) {
+      fieldsToUpdate.push('pickup_location = ?');
+      values.push(pickup_location ? pickup_location.trim() : null);
+    }
+
+    if (fieldsToUpdate.length === 0) {
+      return res.status(400).json({ message: 'No fields provided for modification.' });
+    }
+
+    values.push(req.params.id);
+
     const [result] = await db.query(
-      'UPDATE prixel_orders SET modification_notes = ?, order_status = ? WHERE id = ?',
-      [modification_notes.trim(), 'Pending', req.params.id],
+      `UPDATE prixel_orders SET ${fieldsToUpdate.join(', ')} WHERE id = ?`,
+      values
     );
     if (result.affectedRows === 0) return res.status(404).json({ message: 'Order not found' });
 
@@ -564,7 +585,12 @@ router.patch('/:id/modification', async (req, res) => {
        WHERE o.id = ?`,
       [req.params.id],
     );
-    res.json({ message: 'Modification requested successfully', data: rows[0] });
+    res.json({ message: 'Modification applied successfully', data: rows[0] });
+
+    // Fire-and-forget email to customer
+    sendOrderModifiedEmail(rows[0]).catch(err => {
+      console.error(`[MAIL] Failed to send modification email for order ${rows[0]?.order_id}:`, err.message);
+    });
   } catch (err) {
     res.status(500).json({ message: 'Failed to save modification', error: err.message });
   }

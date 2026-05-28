@@ -174,12 +174,6 @@ router.put('/users/:id', async (req, res) => {
 // ── DELETE /api/admin/users/:id ─────────────────────────────────
 router.delete('/users/:id', async (req, res) => {
   try {
-    // Prevent self-deletion
-    const currentUserId = req.query.current_user_id;
-    if (currentUserId && parseInt(req.params.id) === parseInt(currentUserId)) {
-      return res.status(400).json({ message: 'Cannot delete your own account.' });
-    }
-
     // Soft delete: set status to 'inactive' instead of actual deletion
     const [result] = await db.query(
       'UPDATE prixel_admin_users SET status = "inactive" WHERE id = ?',

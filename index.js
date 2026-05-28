@@ -12,6 +12,7 @@ import inventoryRoutes from './routes/inventory.js';
 import productRoutes from './routes/products.js';
 import productionRoutes from './routes/production.js';
 import invoiceRoutes from './routes/invoices.js';
+import { sendMail, verifyMailer } from './services/mailer.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,6 +40,22 @@ app.use('/api/products', productRoutes);
 app.use('/api/production', productionRoutes);
 app.use('/api/invoices', invoiceRoutes);
 
+// GET /test-email?to=you@example.com  — sends a test email and confirms SMTP works
+app.get('/test-email', async (req, res) => {
+  const to = req.query.to;
+  if (!to) return res.status(400).json({ success: false, message: 'Provide ?to=email' });
+  try {
+    await verifyMailer();
+    const info = await sendMail({
+      to,
+      subject: 'Pixel Tracks — SMTP Test',
+      html: '<p>If you receive this, SMTP is working correctly.</p>',
+    });
+    return res.json({ success: true, messageId: info.messageId });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -49,4 +66,5 @@ app.use((err, req, res, next) => {
 // Start server
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
+  verifyMailer().catch((err) => console.error('[MAIL] SMTP connection FAILED:', err.message));
 });
