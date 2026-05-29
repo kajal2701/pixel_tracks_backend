@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Invoice — Pixel Tracks</title>
+  <title>Order Picked Up — Pixel Tracks</title>
 </head>
 
 <body style="margin: 0; padding: 0; background-color: #f4f6f8; font-family: Arial, Helvetica, sans-serif;">
@@ -32,52 +32,82 @@
             </td>
           </tr>
 
-          <!-- Invoice Details Table -->
+          <!-- Order Details Table -->
           <tr>
             <td style="padding: 20px 40px;">
               <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
                 <tr>
                   <td
                     style="padding: 12px 16px; font-size: 14px; color: #457b9d; font-weight: bold; border-bottom: 1px solid #e8e8e8; width: 45%;">
-                    Invoice #</td>
+                    Order ID</td>
                   <td style="padding: 12px 16px; font-size: 14px; color: #333333; border-bottom: 1px solid #e8e8e8;">
-                    {{invoiceNumber}}</td>
+                    {{orderId}}</td>
                 </tr>
                 <tr>
                   <td
                     style="padding: 12px 16px; font-size: 14px; color: #457b9d; font-weight: bold; border-bottom: 1px solid #e8e8e8;">
-                    Order(s)</td>
+                    Customer</td>
                   <td style="padding: 12px 16px; font-size: 14px; color: #333333; border-bottom: 1px solid #e8e8e8;">
-                    {{orderNumbers}}</td>
+                    {{customerName}}</td>
                 </tr>
                 <tr>
                   <td
                     style="padding: 12px 16px; font-size: 14px; color: #457b9d; font-weight: bold; border-bottom: 1px solid #e8e8e8;">
-                    Total Amount</td>
+                    Channel Type</td>
                   <td style="padding: 12px 16px; font-size: 14px; color: #333333; border-bottom: 1px solid #e8e8e8;">
-                    <strong style="color: #1a1a2e; font-size: 16px;">$ {{totalAmount}}</strong></td>
+                    {{channelType}}</td>
+                </tr>
+                <tr>
+                  <td
+                    style="padding: 12px 16px; font-size: 14px; color: #457b9d; font-weight: bold; border-bottom: 1px solid #e8e8e8;">
+                    Color</td>
+                  <td style="padding: 12px 16px; font-size: 14px; color: #333333; border-bottom: 1px solid #e8e8e8;">
+                    {{color}}</td>
+                </tr>
+                <tr>
+                  <td
+                    style="padding: 12px 16px; font-size: 14px; color: #457b9d; font-weight: bold; border-bottom: 1px solid #e8e8e8;">
+                    Total Pieces</td>
+                  <td style="padding: 12px 16px; font-size: 14px; color: #333333; border-bottom: 1px solid #e8e8e8;">
+                    {{totalPieces}}</td>
+                </tr>
+                <tr>
+                  <td
+                    style="padding: 12px 16px; font-size: 14px; color: #457b9d; font-weight: bold; border-bottom: 1px solid #e8e8e8;">
+                    Final Order Length</td>
+                  <td style="padding: 12px 16px; font-size: 14px; color: #333333; border-bottom: 1px solid #e8e8e8;">
+                    {{finalLength}} ft</td>
                 </tr>
                 <tr>
                   <td style="padding: 12px 16px; font-size: 14px; color: #457b9d; font-weight: bold;">Status</td>
                   <td style="padding: 12px 16px; font-size: 14px;">
                     <span
-                      style="background-color: #fff3cd; color: #856404; padding: 4px 12px; border-radius: 12px; font-size: 13px; font-weight: bold;">Sent</span>
+                      style="background-color: #d4edda; color: #155724; padding: 4px 12px; border-radius: 12px; font-size: 13px; font-weight: bold;">✅ Completed</span>
                   </td>
                 </tr>
               </table>
             </td>
           </tr>
 
-          <!-- View Invoice Button -->
+          <!-- Pickup Info Box -->
           <tr>
-            <td style="padding: 10px 40px 30px; text-align: center;">
-              <a href="{{invoiceUrl}}" target="_blank"
-                style="display: inline-block; background-color: #457b9d; color: #ffffff; text-decoration: none; padding: 14px 36px; border-radius: 8px; font-size: 15px; font-weight: bold; letter-spacing: 0.5px;">
-                📄 View Invoice
-              </a>
-              <p style="margin: 12px 0 0; font-size: 12px; color: #999999;">
-                Click the button above to view the full invoice details and submit payment.
-              </p>
+            <td style="padding: 0 40px 20px;">
+              <table width="100%" cellpadding="0" cellspacing="0"
+                style="background-color: #e8f5e9; border-radius: 8px; border: 1px solid #c8e6c9;">
+                <tr>
+                  <td style="padding: 20px;">
+                    <p style="margin: 0 0 10px; font-size: 15px; font-weight: bold; color: #2e7d32;">
+                      📦 {{pickupLabel}}
+                    </p>
+                    <p style="margin: 0 0 8px; font-size: 14px; color: #333333;">
+                      📍 <strong>{{pickupAddress}}</strong>
+                    </p>
+                    <p style="margin: 0; font-size: 14px; color: #333333;">
+                      {{pickupNote}}
+                    </p>
+                  </td>
+                </tr>
+              </table>
             </td>
           </tr>
 

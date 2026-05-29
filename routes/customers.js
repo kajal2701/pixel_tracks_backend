@@ -43,7 +43,7 @@ router.get('/:id', async (req, res) => {
 
 // ── POST /api/customers ─────────────────────────────────────────
 router.post('/', async (req, res) => {
-  const { customer_number, company_name, contact_name, email, phone, status, access_code, channel_pricing } = req.body;
+  const { customer_number, company_name, contact_name, email, phone, status, password, channel_pricing } = req.body;
 
   if (!customer_number || !company_name || !contact_name || !email || !phone) {
     return res.status(400).json({ message: 'customer_number, company_name, contact_name, email, and phone are required.' });
@@ -53,10 +53,13 @@ router.post('/', async (req, res) => {
   // Store as JSON string in DB; mysql2 may auto-parse on read
   const pricingJson = channel_pricing ? JSON.stringify(channel_pricing) : null;
 
+  // Base64 encode the password before storing
+  const encodedPassword = password ? Buffer.from(password).toString('base64') : null;
+
   const sql = `
     INSERT INTO prixel_customers
-      (customer_number, company_name, contact_name, email, phone, status, access_code, channel_pricing)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (customer_number, company_name, contact_name, email, phone, status, access_code, password, channel_pricing)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   const values = [
@@ -65,8 +68,9 @@ router.post('/', async (req, res) => {
     contact_name,
     email,
     phone,
-    status      ?? 'active',
-    access_code ?? null,
+    status ?? 'active',
+    null,
+    encodedPassword,
     pricingJson,
   ];
 
@@ -89,7 +93,7 @@ router.post('/', async (req, res) => {
 
 // ── PUT /api/customers/:id ──────────────────────────────────────
 router.put('/:id', async (req, res) => {
-  const { customer_number, company_name, contact_name, email, phone, status, access_code, channel_pricing } = req.body;
+  const { customer_number, company_name, contact_name, email, phone, status, password, channel_pricing } = req.body;
 
   const fields = [];
   const values = [];
@@ -100,7 +104,11 @@ router.put('/:id', async (req, res) => {
   if (email            !== undefined) { fields.push('email = ?');            values.push(email); }
   if (phone            !== undefined) { fields.push('phone = ?');            values.push(phone); }
   if (status           !== undefined) { fields.push('status = ?');           values.push(status); }
-  if (access_code      !== undefined) { fields.push('access_code = ?');      values.push(access_code); }
+  if (password         !== undefined && password !== '') {
+    // Base64 encode password before storing
+    fields.push('password = ?');
+    values.push(Buffer.from(password).toString('base64'));
+  }
   if (channel_pricing  !== undefined) {
     // Store as JSON string; accepts object or null
     fields.push('channel_pricing = ?');

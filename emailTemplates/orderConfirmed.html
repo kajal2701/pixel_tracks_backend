@@ -25,9 +25,9 @@
           <!-- Greeting -->
           <tr>
             <td style="padding: 30px 40px 10px;">
-              <p style="margin: 0; font-size: 16px; color: #333333;">Hello <strong>{{customerName}}</strong>,</p>
+              <p style="margin: 0; font-size: 16px; color: #333333;">{{greeting}}</p>
               <p style="margin: 10px 0 0; font-size: 15px; color: #555555;">
-                Great news! Your order has been <strong style="color: #2a9d8f;">confirmed</strong>. Here are the details:
+                {{introMessage}}
               </p>
             </td>
           </tr>
@@ -129,8 +129,7 @@
           <tr>
             <td style="padding: 10px 40px 30px;">
               <p style="margin: 0; font-size: 13px; color: #555555;">
-                We will notify you when your order is ready for {{deliveryMethod}}.
-                If you have any questions, feel free to reach out to us.
+                {{noteBody}}
               </p>
             </td>
           </tr>

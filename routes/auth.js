@@ -1,16 +1,15 @@
 import { Router } from 'express';
-import bcrypt from 'bcryptjs';
 import db from '../db.js';
 
 const router = Router();
 
 // ── POST /api/auth/login ────────────────────────────────────────
-// Body: { customer_number, access_code }
+// Body: { customer_number, password }
 router.post('/login', async (req, res) => {
-  const { customer_number, access_code } = req.body;
+  const { customer_number, password } = req.body;
 
-  if (!customer_number || !access_code) {
-    return res.status(400).json({ message: 'customer_number and access_code are required.' });
+  if (!customer_number || !password) {
+    return res.status(400).json({ message: 'customer_number and password are required.' });
   }
 
   try {
@@ -20,7 +19,7 @@ router.post('/login', async (req, res) => {
     );
 
     if (results.length === 0) {
-      return res.status(401).json({ message: 'Invalid customer number or access code.' });
+      return res.status(401).json({ message: 'Invalid customer number or password.' });
     }
 
     const customer = results[0];
@@ -29,21 +28,20 @@ router.post('/login', async (req, res) => {
       return res.status(403).json({ message: 'Account is inactive. Please contact support.' });
     }
 
-    if (!customer.access_code) {
-      return res.status(401).json({ message: 'No access code set for this account. Please contact support.' });
+    if (!customer.password) {
+      return res.status(401).json({ message: 'No password set for this account. Please contact support.' });
     }
 
-    // Compare plain-text or bcrypt hashed access code
-    const isMatch = customer.access_code.startsWith('$2')
-      ? await bcrypt.compare(access_code, customer.access_code)
-      : customer.access_code === access_code;
+    // Compare Base64 encoded password
+    const encodedInput = Buffer.from(password).toString('base64');
+    const isMatch = customer.password === encodedInput;
 
     if (!isMatch) {
-      return res.status(401).json({ message: 'Invalid customer number or access code.' });
+      return res.status(401).json({ message: 'Invalid customer number or password.' });
     }
 
-    // Return customer info without the access_code
-    const { access_code: _hidden, ...customerData } = customer;
+    // Return customer info without the password and access_code
+    const { password: _hidden, access_code: _ac, ...customerData } = customer;
 
     res.json({ message: 'Login successful', customer: customerData });
   } catch (err) {
@@ -51,28 +49,28 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// ── POST /api/auth/set-access-code ─────────────────────────────
-// Body: { customer_number, access_code }
-router.post('/set-access-code', async (req, res) => {
-  const { customer_number, access_code } = req.body;
+// ── POST /api/auth/set-password ─────────────────────────────────
+// Body: { customer_number, password }
+router.post('/set-password', async (req, res) => {
+  const { customer_number, password } = req.body;
 
-  if (!customer_number || !access_code) {
-    return res.status(400).json({ message: 'customer_number and access_code are required.' });
+  if (!customer_number || !password) {
+    return res.status(400).json({ message: 'customer_number and password are required.' });
   }
-  if (access_code.length < 4) {
-    return res.status(400).json({ message: 'access_code must be at least 4 characters.' });
+  if (password.length < 6) {
+    return res.status(400).json({ message: 'Password must be at least 6 characters.' });
   }
 
   try {
-    const hashed = await bcrypt.hash(access_code, 10);
+    const encoded = Buffer.from(password).toString('base64');
     const [result] = await db.query(
-      'UPDATE prixel_customers SET access_code = ? WHERE customer_number = ?',
-      [hashed, customer_number],
+      'UPDATE prixel_customers SET password = ? WHERE customer_number = ?',
+      [encoded, customer_number],
     );
     if (result.affectedRows === 0) return res.status(404).json({ message: 'Customer not found.' });
-    res.json({ message: 'Access code updated successfully.' });
+    res.json({ message: 'Password updated successfully.' });
   } catch (err) {
-    res.status(500).json({ message: 'Failed to update access code', error: err.message });
+    res.status(500).json({ message: 'Failed to update password', error: err.message });
   }
 });
 

@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import db from '../db.js';
-import { sendInvoiceSentEmail } from '../services/emailService.js';
+import { sendInvoiceSentEmail, sendInvoiceSentSalesEmail, sendPaymentSubmittedSalesEmail } from '../services/emailService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,7 +38,8 @@ const calcTotals = ({ order_subtotal, extraWorkTotal, discount_pct, gst_pct }) =
   const subtotal = parseFloat(order_subtotal || 0) + parseFloat(extraWorkTotal || 0);
   const discountPct = Math.min(Math.max(parseFloat(discount_pct) || 0, 0), 100);
   const discountAmount = subtotal * (discountPct / 100);
-  const gstPct = Math.min(Math.max(parseFloat(gst_pct) || 5, 0), 100);
+  const parsedGst = parseFloat(gst_pct);
+  const gstPct = Math.min(Math.max(isNaN(parsedGst) ? 5 : parsedGst, 0), 100);
   const gstAmount = (subtotal - discountAmount) * (gstPct / 100);
   const totalAmount = subtotal - discountAmount + gstAmount;
   return { discountAmount, gstAmount, totalAmount };
@@ -375,6 +376,11 @@ router.patch('/:id/status', async (req, res) => {
         sendInvoiceSentEmail(invoice, customerRows[0]).catch((err) =>
           console.error(`[MAIL] Failed to send invoice email for ${invoice.invoice_number}:`, err.message)
         );
+
+        // Fire-and-forget: send invoice email to sales team
+        sendInvoiceSentSalesEmail(invoice, customerRows[0]).catch((err) =>
+          console.error(`[MAIL] Failed to send invoice sales email for ${invoice.invoice_number}:`, err.message)
+        );
       }
     }
 
@@ -412,6 +418,11 @@ router.post('/:id/payment', upload.single('screenshot'), async (req, res) => {
 
     const [updated] = await db.query('SELECT * FROM prixel_invoices WHERE id = ?', [req.params.id]);
     res.json({ message: 'Payment submitted successfully', data: updated[0] });
+
+    // Fire-and-forget: notify sales team about payment submission
+    sendPaymentSubmittedSalesEmail(updated[0]).catch((err) =>
+      console.error(`[MAIL] Failed to send payment submitted sales email for invoice ${updated[0]?.invoice_number}:`, err.message)
+    );
   } catch (err) {
     res.status(500).json({ message: 'Failed to submit payment', error: err.message });
   }

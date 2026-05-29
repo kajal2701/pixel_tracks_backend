@@ -1,7 +1,21 @@
 import { Router } from 'express';
 import db from '../db.js';
 import inventoryService from '../services/inventoryService.js';
-import { sendOrderModifiedEmail } from '../services/emailService.js';
+import {
+  sendOrderPlacedEmail,
+  sendOrderConfirmedEmail,
+  sendOrderConfirmedSalesEmail,
+  sendOrderConfirmedOpsEmail,
+  sendOrderCancelledEmail,
+  sendOrderCancelledSalesEmail,
+  sendOrderDispatchedEmail,
+  sendOrderDispatchedSalesEmail,
+  sendOrderDispatchedOpsEmail,
+  sendOrderModifiedEmail,
+  sendOrderReceivedSalesEmail,
+  sendOrderPickedUpSalesEmail,
+  sendOrderPickedUpOpsEmail,
+} from '../services/emailService.js';
 
 const router = Router();
 
@@ -154,6 +168,16 @@ router.post('/', async (req, res) => {
     );
 
     res.status(201).json({ message: 'Order created successfully', data: rows[0] });
+
+    // Fire-and-forget: send order placed email to customer
+    sendOrderPlacedEmail(rows[0]).catch(err => {
+      console.error(`[MAIL] Failed to send order placed email for order ${rows[0]?.order_id}:`, err.message);
+    });
+
+    // Fire-and-forget: send order received email to sales team
+    sendOrderReceivedSalesEmail(rows[0]).catch(err => {
+      console.error(`[MAIL] Failed to send order received sales email for order ${rows[0]?.order_id}:`, err.message);
+    });
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({ message: 'Order ID conflict. Please retry.' });
@@ -273,7 +297,32 @@ router.post('/:id/confirm', async (req, res) => {
     // Update order status to Confirmed
     await db.query('UPDATE prixel_orders SET order_status = "Confirmed" WHERE id = ?', [req.params.id]);
 
-    res.json({ message: 'Order confirmed and inventory held', data: { ...order, order_status: 'Confirmed' } });
+    // Fetch full order with customer info for the email
+    const [confirmedRows] = await db.query(
+      `SELECT o.*, c.company_name, c.contact_name, c.email
+       FROM prixel_orders o
+       LEFT JOIN prixel_customers c ON c.id = o.customer_id
+       WHERE o.id = ?`,
+      [req.params.id],
+    );
+    const confirmedOrder = confirmedRows[0] || { ...order, order_status: 'Confirmed' };
+
+    res.json({ message: 'Order confirmed and inventory held', data: confirmedOrder });
+
+    // Fire-and-forget: send order confirmed email to customer
+    sendOrderConfirmedEmail(confirmedOrder).catch(err => {
+      console.error(`[MAIL] Failed to send order confirmed email for order ${confirmedOrder?.order_id}:`, err.message);
+    });
+
+    // Fire-and-forget: send order confirmed sales email to sales team
+    sendOrderConfirmedSalesEmail(confirmedOrder).catch(err => {
+      console.error(`[MAIL] Failed to send order confirmed sales email for order ${confirmedOrder?.order_id}:`, err.message);
+    });
+
+    // Fire-and-forget: send order confirmed email to operations team
+    sendOrderConfirmedOpsEmail(confirmedOrder).catch(err => {
+      console.error(`[MAIL] Failed to send order confirmed ops email for order ${confirmedOrder?.order_id}:`, err.message);
+    });
   } catch (err) {
     res.status(500).json({ message: 'Failed to confirm order', error: err.message });
   }
@@ -518,6 +567,42 @@ router.patch('/:id/status', async (req, res) => {
       [req.params.id],
     );
     res.json({ message: `Order status updated to ${order_status}`, data: rows[0] });
+
+    // Fire-and-forget: send status-change emails to customer
+    if (order_status === 'Cancelled') {
+      sendOrderCancelledEmail(rows[0]).catch(err => {
+        console.error(`[MAIL] Failed to send cancelled email for order ${rows[0]?.order_id}:`, err.message);
+      });
+
+      // Fire-and-forget: send cancelled email to sales team
+      sendOrderCancelledSalesEmail(rows[0]).catch(err => {
+        console.error(`[MAIL] Failed to send cancelled sales email for order ${rows[0]?.order_id}:`, err.message);
+      });
+    } else if (order_status === 'Ready for Pickup/Delivery') {
+      sendOrderDispatchedEmail(rows[0]).catch(err => {
+        console.error(`[MAIL] Failed to send dispatched email for order ${rows[0]?.order_id}:`, err.message);
+      });
+
+      // Fire-and-forget: send dispatched email to sales team
+      sendOrderDispatchedSalesEmail(rows[0]).catch(err => {
+        console.error(`[MAIL] Failed to send dispatched sales email for order ${rows[0]?.order_id}:`, err.message);
+      });
+
+      // Fire-and-forget: send dispatched email to operations team
+      sendOrderDispatchedOpsEmail(rows[0]).catch(err => {
+        console.error(`[MAIL] Failed to send dispatched ops email for order ${rows[0]?.order_id}:`, err.message);
+      });
+    } else if (order_status === 'Completed') {
+      // Fire-and-forget: notify sales team that order has been picked up / delivered
+      sendOrderPickedUpSalesEmail(rows[0]).catch(err => {
+        console.error(`[MAIL] Failed to send picked up sales email for order ${rows[0]?.order_id}:`, err.message);
+      });
+
+      // Fire-and-forget: notify operations team that order has been picked up / delivered
+      sendOrderPickedUpOpsEmail(rows[0]).catch(err => {
+        console.error(`[MAIL] Failed to send picked up ops email for order ${rows[0]?.order_id}:`, err.message);
+      });
+    }
   } catch (err) {
     res.status(500).json({ message: 'Failed to update status', error: err.message });
   }
