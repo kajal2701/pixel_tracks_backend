@@ -12,17 +12,15 @@ import nodemailer from "nodemailer";
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || "mail.pixeltracks.ca",
-  port: parseInt(process.env.SMTP_PORT || "465"),
-  secure: true,
+  port: parseInt(process.env.SMTP_PORT || "587"),
+  secure: false,
   auth: {
     user: process.env.SMTP_USER || "notification@pixeltracks.ca",
     pass: process.env.SMTP_PASS || "notification@pixeltracks.ca",
   },
-  family: 4,
-  tls: {
-    rejectUnauthorized: false,
-  },
+  family: 4,  // ✅ Force IPv4 — fixes ENETUNREACH on Render
 });
+
 
 
 /**
