@@ -19,9 +19,9 @@ const transporter = nodemailer.createTransport({
     pass: process.env.SMTP_PASS || "notification@pixeltracks.ca",
   },
   family: 4,
-  // tls: {
-  //   rejectUnauthorized: false,
-  // },
+  tls: {
+    rejectUnauthorized: false,
+  },
 });
 
 
