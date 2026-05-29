@@ -2,7 +2,7 @@ import nodemailer from "nodemailer";
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || "mail.pixeltracks.ca",
-  port: parseInt(process.env.SMTP_PORT || "587"),
+  port: parseInt(process.env.SMTP_PORT || "465"),
   secure: false, // TLS on port 587
   auth: {
     user: process.env.SMTP_USER || "notification@pixeltracks.ca",
