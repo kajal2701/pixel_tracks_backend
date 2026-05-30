@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import bcrypt from 'bcryptjs';
 import db from '../db.js';
 
 const router = Router();
@@ -53,8 +54,8 @@ router.post('/', async (req, res) => {
   // Store as JSON string in DB; mysql2 may auto-parse on read
   const pricingJson = channel_pricing ? JSON.stringify(channel_pricing) : null;
 
-  // Base64 encode the password before storing
-  const encodedPassword = password ? Buffer.from(password).toString('base64') : null;
+  // Bcrypt hash the password before storing
+  const encodedPassword = password ? await bcrypt.hash(password, 10) : null;
 
   const sql = `
     INSERT INTO prixel_customers
@@ -98,18 +99,18 @@ router.put('/:id', async (req, res) => {
   const fields = [];
   const values = [];
 
-  if (customer_number  !== undefined) { fields.push('customer_number = ?');  values.push(customer_number); }
-  if (company_name     !== undefined) { fields.push('company_name = ?');     values.push(company_name); }
-  if (contact_name     !== undefined) { fields.push('contact_name = ?');     values.push(contact_name); }
-  if (email            !== undefined) { fields.push('email = ?');            values.push(email); }
-  if (phone            !== undefined) { fields.push('phone = ?');            values.push(phone); }
-  if (status           !== undefined) { fields.push('status = ?');           values.push(status); }
-  if (password         !== undefined && password !== '') {
-    // Base64 encode password before storing
+  if (customer_number !== undefined) { fields.push('customer_number = ?'); values.push(customer_number); }
+  if (company_name !== undefined) { fields.push('company_name = ?'); values.push(company_name); }
+  if (contact_name !== undefined) { fields.push('contact_name = ?'); values.push(contact_name); }
+  if (email !== undefined) { fields.push('email = ?'); values.push(email); }
+  if (phone !== undefined) { fields.push('phone = ?'); values.push(phone); }
+  if (status !== undefined) { fields.push('status = ?'); values.push(status); }
+  if (password !== undefined && password !== '') {
+    // Bcrypt hash password before storing
     fields.push('password = ?');
-    values.push(Buffer.from(password).toString('base64'));
+    values.push(await bcrypt.hash(password, 10));
   }
-  if (channel_pricing  !== undefined) {
+  if (channel_pricing !== undefined) {
     // Store as JSON string; accepts object or null
     fields.push('channel_pricing = ?');
     values.push(channel_pricing ? JSON.stringify(channel_pricing) : null);
