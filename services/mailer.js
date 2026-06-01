@@ -1,34 +1,18 @@
 import nodemailer from "nodemailer";
 
-// const transporter = nodemailer.createTransport({
-//   host: process.env.SMTP_HOST || "mail.pixeltracks.ca",
-//   port: parseInt(process.env.SMTP_PORT || "465"),
-//   secure: true, // TLS on port 587
-//   auth: {
-//     user: process.env.SMTP_USER || "notification@pixeltracks.ca",
-//     pass: process.env.SMTP_PASS || "notification@pixeltracks.ca",
-//   },
-// });
-
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || "mail.pixeltracks.ca",
+  host: process.env.SMTP_HOST || "smtp.gmail.com",
   port: parseInt(process.env.SMTP_PORT || "587"),
   secure: false,
   auth: {
-    user: process.env.SMTP_USER || "notification@pixeltracks.ca",
-    pass: process.env.SMTP_PASS || "notification@pixeltracks.ca",
+    user: process.env.SMTP_USER || "notifications@canstarlights.ca",
+    pass: process.env.SMTP_PASS || "tocz azws eune bcvm",
   },
-  family: 4,  // ✅ Force IPv4 — fixes ENETUNREACH on Render
 });
 
-
-
-/**
- * Send an email
- */
 export const sendMail = async ({ to, cc, subject, html }) => {
   const mailOptions = {
-    from: '"Pixel Tracks" <notification@pixeltracks.ca>',
+    from: '"CanStar Lights" <notifications@canstarlights.ca>',
     to,
     subject,
     html,
@@ -39,7 +23,6 @@ export const sendMail = async ({ to, cc, subject, html }) => {
   return info;
 };
 
-// Verify SMTP connection
 export const verifyMailer = () =>
   transporter.verify().then(() => {
     console.log("[MAIL] SMTP connection OK");
