@@ -10,6 +10,7 @@ const transporter = nodemailer.createTransport({
   },
   connectionTimeout: 10000,
   greetingTimeout: 10000,
+  family: 4, // force IPv4 — Render doesn't support IPv6 outbound
 });
 
 export const sendMail = async ({ to, cc, subject, html }) => {
