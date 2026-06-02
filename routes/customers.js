@@ -44,7 +44,7 @@ router.get('/:id', async (req, res) => {
 
 // ── POST /api/customers ─────────────────────────────────────────
 router.post('/', async (req, res) => {
-  const { customer_number, company_name, contact_name, email, phone, status, password, channel_pricing } = req.body;
+  const { customer_number, company_name, contact_name, email, phone, status, password, channel_pricing, delivery_address } = req.body;
 
   if (!customer_number || !company_name || !contact_name || !email || !phone) {
     return res.status(400).json({ message: 'customer_number, company_name, contact_name, email, and phone are required.' });
@@ -59,8 +59,8 @@ router.post('/', async (req, res) => {
 
   const sql = `
     INSERT INTO prixel_customers
-      (customer_number, company_name, contact_name, email, phone, status, access_code, password, channel_pricing)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (customer_number, company_name, contact_name, email, phone, status, access_code, password, channel_pricing, delivery_address)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   const values = [
@@ -73,6 +73,7 @@ router.post('/', async (req, res) => {
     null,
     encodedPassword,
     pricingJson,
+    delivery_address || null,
   ];
 
   try {
@@ -94,7 +95,7 @@ router.post('/', async (req, res) => {
 
 // ── PUT /api/customers/:id ──────────────────────────────────────
 router.put('/:id', async (req, res) => {
-  const { customer_number, company_name, contact_name, email, phone, status, password, channel_pricing } = req.body;
+  const { customer_number, company_name, contact_name, email, phone, status, password, channel_pricing, delivery_address } = req.body;
 
   const fields = [];
   const values = [];
@@ -114,6 +115,10 @@ router.put('/:id', async (req, res) => {
     // Store as JSON string; accepts object or null
     fields.push('channel_pricing = ?');
     values.push(channel_pricing ? JSON.stringify(channel_pricing) : null);
+  }
+  if (delivery_address !== undefined) {
+    fields.push('delivery_address = ?');
+    values.push(delivery_address || null);
   }
 
   if (fields.length === 0) {

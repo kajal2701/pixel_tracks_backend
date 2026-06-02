@@ -46,33 +46,65 @@ const calcTotals = ({ order_subtotal, extraWorkTotal, discount_pct, gst_pct }) =
 };
 
 // ── Helper: resolve unit price from customer channel_pricing ─────
-const resolveUnitPrice = (channelPricing, holeDistance, channelLength) => {
+// Supports both new nested format:
+//   { commercial: { "10h": { price: 10, enabled: true } }, residential: { ... } }
+// and legacy flat format:
+//   { "10h": 10, "9h": 20, "8h": 30 }
+const resolveUnitPrice = (channelPricing, holeDistance, channelLength, channelType) => {
   if (!channelPricing) return 0;
   const pricing = typeof channelPricing === 'string' ? JSON.parse(channelPricing) : channelPricing;
   const hd = String(holeDistance || '').trim();
 
-  // 1. Direct match: e.g. hole_distance = "9h"
-  if (pricing[hd] !== undefined) return parseFloat(pricing[hd]) || 0;
-  // 2. Add 'h' suffix: e.g. hole_distance = "9" → key "9h"
-  if (pricing[hd + 'h'] !== undefined) return parseFloat(pricing[hd + 'h']) || 0;
+  // ── Detect new nested format (has 'commercial' or 'residential' key) ──
+  if (pricing.commercial || pricing.residential) {
+    // Normalize channel_type: "Commercial" → "commercial", "Residential" → "residential"
+    const typeKey = (channelType || 'residential').toLowerCase();
+    const typePricing = pricing[typeKey];
+    if (!typePricing) return 0;
 
-  // 3. Integer hole count mapping: 10→"10h", 9→"9h", 8→"8h"
-  const holeInt = parseInt(hd, 10);
-  if ([8, 9, 10].includes(holeInt) && pricing[holeInt + 'h'] !== undefined) {
-    return parseFloat(pricing[holeInt + 'h']) || 0;
+    // Resolve hole key
+    const holeKey = resolveHoleKey(hd, channelLength);
+    if (holeKey && typePricing[holeKey]) {
+      const entry = typePricing[holeKey];
+      // entry can be { price: X, enabled: Y } or just a number (legacy)
+      return parseFloat(typeof entry === 'object' ? entry.price : entry) || 0;
+    }
+
+    // Fallback: first available key in this type
+    const keys = Object.keys(typePricing);
+    if (keys.length > 0) {
+      const entry = typePricing[keys[0]];
+      return parseFloat(typeof entry === 'object' ? entry.price : entry) || 0;
+    }
+    return 0;
   }
 
-  // 4. Feet → holes conversion (channel_length stores feet: 6.67, 6.00, 5.33)
-  const feet = parseFloat(hd) || parseFloat(channelLength || 0);
-  if (Math.abs(feet - 6.67) < 0.1 && pricing['10h'] !== undefined) return parseFloat(pricing['10h']) || 0;
-  if (Math.abs(feet - 6.00) < 0.1 && pricing['9h'] !== undefined) return parseFloat(pricing['9h']) || 0;
-  if (Math.abs(feet - 5.33) < 0.1 && pricing['8h'] !== undefined) return parseFloat(pricing['8h']) || 0;
+  // ── Legacy flat format fallback ──
+  const holeKey = resolveHoleKey(hd, channelLength);
+  if (holeKey && pricing[holeKey] !== undefined) return parseFloat(pricing[holeKey]) || 0;
 
-  // 5. Last resort: use any available pricing key
+  // Last resort: use any available pricing key
   const keys = Object.keys(pricing);
   if (keys.length > 0) return parseFloat(pricing[keys[0]]) || 0;
 
   return 0;
+};
+
+// ── Helper: resolve hole distance to a pricing key like "10h" ─────
+const resolveHoleKey = (hd, channelLength) => {
+  // 1. Direct match: e.g. "9h"
+  if (['10h', '9h', '8h'].includes(hd)) return hd;
+  // 2. Add 'h' suffix: e.g. "9" → "9h"
+  if (['8', '9', '10'].includes(hd)) return hd + 'h';
+  // 3. Integer hole count
+  const holeInt = parseInt(hd, 10);
+  if ([8, 9, 10].includes(holeInt)) return holeInt + 'h';
+  // 4. Feet → holes conversion
+  const feet = parseFloat(hd) || parseFloat(channelLength || 0);
+  if (Math.abs(feet - 6.67) < 0.1) return '10h';
+  if (Math.abs(feet - 6.00) < 0.1) return '9h';
+  if (Math.abs(feet - 5.33) < 0.1) return '8h';
+  return null;
 };
 
 
@@ -188,7 +220,7 @@ router.post('/generate', async (req, res) => {
 
     // 4. Build order_details snapshot (per-order billing)
     const orderDetails = orders.map((ord) => {
-      const unitPrice = resolveUnitPrice(ord.channel_pricing, ord.hole_distance, ord.channel_length);
+      const unitPrice = resolveUnitPrice(ord.channel_pricing, ord.hole_distance, ord.channel_length, ord.channel_type);
       const finalLength = parseFloat(ord.final_length || 0);
       const subtotal = unitPrice * finalLength;
       return {
@@ -457,6 +489,41 @@ router.patch('/:id/payment/confirm', async (req, res) => {
   }
 });
 
+
+// ═══════════════════════════════════════════════════════════════════
+// POST /api/invoices/:id/resend — Resend invoice email to customer
+// ═══════════════════════════════════════════════════════════════════
+router.post('/:id/resend', async (req, res) => {
+  try {
+    const [existing] = await db.query('SELECT * FROM prixel_invoices WHERE id = ?', [req.params.id]);
+    if (existing.length === 0) return res.status(404).json({ message: 'Invoice not found' });
+
+    const invoice = existing[0];
+    if (invoice.status === 'Draft') {
+      return res.status(400).json({ message: 'Cannot resend a draft invoice. Please send it first.' });
+    }
+
+    const [customerRows] = await db.query(
+      'SELECT company_name, contact_name, email FROM prixel_customers WHERE id = ?',
+      [invoice.customer_id]
+    );
+    if (customerRows.length === 0 || !customerRows[0].email) {
+      return res.status(400).json({ message: 'Customer email not found.' });
+    }
+
+    // Send invoice email to customer
+    await sendInvoiceSentEmail(invoice, customerRows[0]);
+
+    // Fire-and-forget: send copy to sales team
+    sendInvoiceSentSalesEmail(invoice, customerRows[0]).catch((err) =>
+      console.error(`[MAIL] Failed to resend invoice sales email for ${invoice.invoice_number}:`, err.message)
+    );
+
+    res.json({ message: `Invoice ${invoice.invoice_number} resent successfully to ${customerRows[0].email}` });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to resend invoice', error: err.message });
+  }
+});
 
 // ═══════════════════════════════════════════════════════════════════
 // GET /api/invoices/:id/payment/screenshot — Serve screenshot image

@@ -107,7 +107,7 @@ router.post('/', async (req, res) => {
   const {
     customer_id, channel_type, color, hole_distance,
     channel_length, total_length, total_pieces, final_length,
-    order_status, additional_notes, notes, customer_notes, quick_access,
+    order_status, additional_notes, customer_notes, quick_access,
     delivery_method, pickup_location, pickup_date, delivery_address,
   } = req.body;
 
@@ -158,6 +158,13 @@ router.post('/', async (req, res) => {
     ];
 
     const [result] = await db.query(sql, values);
+
+    if (delivery_method === 'delivery' && delivery_address) {
+      await db.query(
+        'UPDATE prixel_customers SET delivery_address = ? WHERE id = ?',
+        [delivery_address, customer_id]
+      );
+    }
 
     const [rows] = await db.query(
       `SELECT o.*, c.company_name, c.contact_name, c.email
