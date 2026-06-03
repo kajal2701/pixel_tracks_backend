@@ -737,20 +737,38 @@ export const sendProductionAssignedEmail = async (production, order, techInfo, r
  */
 export const sendOrderModifiedEmail = async (order) => {
   const backendUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 8000}`;
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
 
   const isPickup = order.delivery_method === 'pickup';
 
-  // Build "What Changed" lines
+  let modNote = order.modification_notes;
+  let pickupDate = order.pickup_date;
+  let pickupLocation = order.pickup_location;
+
+  try {
+    if (order.modification_notes) {
+      const parsed = JSON.parse(order.modification_notes);
+      if (parsed && parsed.status === 'pending') {
+        modNote = parsed.note;
+        pickupDate = parsed.pickup_date;
+        pickupLocation = parsed.pickup_location;
+      }
+    }
+  } catch (e) {
+    // Not JSON, fall back to default values
+  }
+
+  // Build "What Changed" lines based on pending values
   let changesLines = [];
 
-  if (order.pickup_date) {
+  if (pickupDate) {
     const dateLabel = isPickup ? 'Pickup Date' : 'Delivery Date';
-    const dateValue = String(order.pickup_date).substring(0, 10);
+    const dateValue = String(pickupDate).substring(0, 10);
     changesLines.push(`📅 <strong>${dateLabel}:</strong> ${dateValue}`);
   }
 
-  if (isPickup && order.pickup_location) {
-    changesLines.push(`📍 <strong>Pickup Location:</strong> ${order.pickup_location}`);
+  if (isPickup && pickupLocation) {
+    changesLines.push(`📍 <strong>Pickup Location:</strong> ${pickupLocation}`);
   }
 
   const changesSection = changesLines.length > 0
@@ -759,7 +777,7 @@ export const sendOrderModifiedEmail = async (order) => {
 
   // Build notes section (only if modification_notes exist)
   let notesSection = '';
-  if (order.modification_notes && order.modification_notes.trim()) {
+  if (modNote && modNote.trim()) {
     notesSection = `
       <tr>
         <td style="padding: 0 40px 20px;">
@@ -771,7 +789,7 @@ export const sendOrderModifiedEmail = async (order) => {
                   📝 Admin Notes
                 </p>
                 <p style="margin: 0; font-size: 14px; color: #333333;">
-                  ${order.modification_notes}
+                  ${modNote}
                 </p>
               </td>
             </tr>
@@ -779,6 +797,9 @@ export const sendOrderModifiedEmail = async (order) => {
         </td>
       </tr>`;
   }
+
+  const approveUrl = `${frontendUrl}/modification-resolve?orderId=${order.id}&action=approve`;
+  const cancelUrl = `${frontendUrl}/modification-resolve?orderId=${order.id}&action=cancel`;
 
   const html = renderTemplate("orderModified", {
     logoUrl: `${backendUrl}/uploads/email/light_logo.png`,
@@ -793,12 +814,14 @@ export const sendOrderModifiedEmail = async (order) => {
     finalLength: order.final_length,
     changesSection,
     notesSection,
+    approveUrl,
+    cancelUrl,
     year: new Date().getFullYear().toString(),
   });
 
   return sendMail({
     to: order.email,
-    subject: `Order Modified — ${order.order_id}`,
+    subject: `Order Modification Request — ${order.order_id}`,
     html,
   });
 };

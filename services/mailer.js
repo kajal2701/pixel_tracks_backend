@@ -1,33 +1,34 @@
-import nodemailer from "nodemailer";
+import axios from "axios";
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || "smtp.gmail.com",
-  port: parseInt(process.env.SMTP_PORT || "465"),
-  secure: true, // SSL on 465
-  auth: {
-    user: process.env.SMTP_USER || "notifications@canstarlights.ca",
-    pass: process.env.SMTP_PASS || "tocz azws eune bcvm",
-  },
-  connectionTimeout: 10000,
-  greetingTimeout: 10000,
-  family: 4, // force IPv4 — Render doesn't support IPv6 outbound
-});
+const PROMAILER_API_KEY = process.env.PROMAILER_API_KEY;
 
 export const sendMail = async ({ to, cc, subject, html }) => {
-  const mailOptions = {
-    from: '"CanStar Lights" <notifications@canstarlights.ca>',
+  const payload = {
     to,
     subject,
     html,
   };
-  if (cc) mailOptions.cc = cc;
-  const info = await transporter.sendMail(mailOptions);
-  console.log(`[MAIL] Sent to=${to} subject="${subject}" messageId=${info.messageId}`);
-  return info;
+  if (cc) payload.cc = cc;
+
+  const response = await axios.post(
+    "https://mailserver.automationlounge.com/api/v1/messages/send",
+    payload,
+    {
+      headers: {
+        "Authorization": `Bearer ${PROMAILER_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+
+  console.log(`[MAIL] Sent to=${to} subject="${subject}" messageId=${response.data?.data?.messageId}`);
+  return response.data;
 };
 
-export const verifyMailer = () =>
-  transporter.verify().then(() => {
-    console.log("[MAIL] SMTP connection OK");
-    return true;
-  });
+export const verifyMailer = async () => {
+  if (!PROMAILER_API_KEY) {
+    throw new Error("PROMAILER_API_KEY is not set");
+  }
+  console.log("[MAIL] Promailer API ready ✅");
+  return true;
+};

@@ -84,6 +84,15 @@ router.post('/', async (req, res) => {
     ];
 
     const [result] = await db.query(sql, values);
+
+    // Auto-create 0 qty inventory for the new product
+    await db.query(
+      `INSERT INTO prixel_inventory 
+       (supplier, color_name, color_code, inventory_type, quantity, size, state, location)
+       VALUES (?, ?, ?, 'Full Roll', 0, ?, 'active', 'Warehouse')`,
+      [manufacturer ?? null, color ?? null, color_code ?? null, full_roll_length ?? 98.00]
+    );
+
     const [rows] = await db.query('SELECT * FROM prixel_products WHERE id = ?', [result.insertId]);
 
     res.status(201).json({ message: 'Product created successfully', data: rows[0] });

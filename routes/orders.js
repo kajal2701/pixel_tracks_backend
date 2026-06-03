@@ -640,34 +640,20 @@ router.patch('/:id/modification', async (req, res) => {
   const { modification_notes, pickup_date, pickup_location } = req.body;
 
   try {
-    const fieldsToUpdate = [];
-    const values = [];
+    const pendingChanges = {
+      status: 'pending',
+      pickup_date: pickup_date || null,
+      pickup_location: pickup_location ? pickup_location.trim() : null,
+      note: modification_notes ? modification_notes.trim() : null
+    };
 
-    if (modification_notes !== undefined) {
-      fieldsToUpdate.push('modification_notes = ?');
-      values.push(modification_notes ? modification_notes.trim() : null);
-    }
-
-    if (pickup_date !== undefined) {
-      fieldsToUpdate.push('pickup_date = ?');
-      values.push(pickup_date || null);
-    }
-
-    if (pickup_location !== undefined) {
-      fieldsToUpdate.push('pickup_location = ?');
-      values.push(pickup_location ? pickup_location.trim() : null);
-    }
-
-    if (fieldsToUpdate.length === 0) {
-      return res.status(400).json({ message: 'No fields provided for modification.' });
-    }
-
-    values.push(req.params.id);
+    const pendingChangesJson = JSON.stringify(pendingChanges);
 
     const [result] = await db.query(
-      `UPDATE prixel_orders SET ${fieldsToUpdate.join(', ')} WHERE id = ?`,
-      values
+      `UPDATE prixel_orders SET modification_notes = ? WHERE id = ?`,
+      [pendingChangesJson, req.params.id]
     );
+
     if (result.affectedRows === 0) return res.status(404).json({ message: 'Order not found' });
 
     const [rows] = await db.query(
@@ -677,14 +663,82 @@ router.patch('/:id/modification', async (req, res) => {
        WHERE o.id = ?`,
       [req.params.id],
     );
-    res.json({ message: 'Modification applied successfully', data: rows[0] });
+    res.json({ message: 'Modification request sent successfully', data: rows[0] });
 
     // Fire-and-forget email to customer
     sendOrderModifiedEmail(rows[0]).catch(err => {
       console.error(`[MAIL] Failed to send modification email for order ${rows[0]?.order_id}:`, err.message);
     });
   } catch (err) {
-    res.status(500).json({ message: 'Failed to save modification', error: err.message });
+    res.status(500).json({ message: 'Failed to save modification request', error: err.message });
+  }
+});
+
+// ── POST /api/orders/:id/modification/resolve ───────────────────
+router.post('/:id/modification/resolve', async (req, res) => {
+  const { action } = req.body; // 'approve' or 'cancel'
+
+  if (!action || !['approve', 'cancel'].includes(action)) {
+    return res.status(400).json({ message: 'Valid action (approve or cancel) is required.' });
+  }
+
+  try {
+    const [orders] = await db.query('SELECT modification_notes FROM prixel_orders WHERE id = ?', [req.params.id]);
+    if (orders.length === 0) return res.status(404).json({ message: 'Order not found' });
+
+    const order = orders[0];
+    let pendingChanges = null;
+
+    try {
+      if (order.modification_notes) {
+        pendingChanges = JSON.parse(order.modification_notes);
+      }
+    } catch (e) {
+      // Not JSON or empty
+      return res.status(400).json({ message: 'No pending modifications found.' });
+    }
+
+    if (!pendingChanges || pendingChanges.status !== 'pending') {
+      return res.status(400).json({ message: 'No pending modifications found.' });
+    }
+
+    if (action === 'approve') {
+      const { pickup_date, pickup_location, note } = pendingChanges;
+      
+      const fieldsToUpdate = [];
+      const values = [];
+
+      fieldsToUpdate.push('pickup_date = ?');
+      values.push(pickup_date || null);
+
+      fieldsToUpdate.push('pickup_location = ?');
+      values.push(pickup_location || null);
+
+      // Keep it as JSON with status 'approved'
+      pendingChanges.status = 'approved';
+      fieldsToUpdate.push('modification_notes = ?');
+      values.push(JSON.stringify(pendingChanges));
+      
+      values.push(req.params.id);
+
+      await db.query(
+        `UPDATE prixel_orders SET ${fieldsToUpdate.join(', ')} WHERE id = ?`,
+        values
+      );
+
+      res.json({ message: 'Modification approved successfully' });
+    } else if (action === 'cancel') {
+      // Keep it as JSON with status 'cancelled'
+      pendingChanges.status = 'cancelled';
+      await db.query(
+        `UPDATE prixel_orders SET modification_notes = ? WHERE id = ?`,
+        [JSON.stringify(pendingChanges), req.params.id]
+      );
+
+      res.json({ message: 'Modification cancelled successfully' });
+    }
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to resolve modification', error: err.message });
   }
 });
 
