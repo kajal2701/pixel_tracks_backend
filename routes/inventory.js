@@ -151,6 +151,186 @@ router.get('/holds', async (req, res) => {
   }
 });
 
+// ── GET /api/inventory/:id/stock-breakdown ──────────────────────
+// Returns per-location stock with dispatched-hold info for a Ready Channel item
+router.get('/:id/stock-breakdown', async (req, res) => {
+  try {
+    const [invRows] = await db.query('SELECT * FROM prixel_inventory WHERE id = ?', [req.params.id]);
+    if (invRows.length === 0) return res.status(404).json({ message: 'Inventory item not found' });
+
+    const item = invRows[0];
+    if (item.inventory_type !== 'Ready Channel') {
+      return res.status(400).json({ message: 'Stock breakdown is only available for Ready Channel inventory' });
+    }
+
+    const stock = JSON.parse(item.location_stock || '{}');
+
+    // Find dispatched holds: orders at 'Ready for Pickup/Delivery' that have pieces committed at specific locations
+    // Pickup orders: pieces committed at pickup_location
+    // Delivery orders: pieces committed at source_location
+    const [dispatchedHolds] = await db.query(
+      `SELECT h.held_pieces, o.delivery_method, o.pickup_location, o.source_location
+       FROM prixel_inventory_holds h
+       JOIN prixel_orders o ON o.order_id = h.order_id
+       WHERE h.inventory_id = ?
+         AND h.status = 'held'
+         AND o.order_status = 'Ready for Pickup/Delivery'`,
+      [req.params.id]
+    );
+
+    // Build map: location → dispatched held pieces
+    const dispatchedHeldMap = {};
+    for (const hold of dispatchedHolds) {
+      const heldPieces = parseInt(hold.held_pieces) || 0;
+      if (heldPieces <= 0) continue;
+
+      let loc = null;
+      if (hold.delivery_method === 'pickup' && hold.pickup_location) {
+        loc = hold.pickup_location;
+      } else if (hold.source_location) {
+        loc = hold.source_location;
+      }
+      if (loc) {
+        dispatchedHeldMap[loc] = (dispatchedHeldMap[loc] || 0) + heldPieces;
+      }
+    }
+
+    // Build response
+    const breakdown = {};
+    for (const [location, pieces] of Object.entries(stock)) {
+      const total = parseInt(pieces) || 0;
+      const dispatchedHeld = dispatchedHeldMap[location] || 0;
+      breakdown[location] = {
+        total,
+        dispatched_held: Math.min(dispatchedHeld, total),
+        available: Math.max(0, total - dispatchedHeld),
+      };
+    }
+
+    res.json({ data: breakdown });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch stock breakdown', error: err.message });
+  }
+});
+
+// ── POST /api/inventory/:id/transfer ────────────────────────────
+// Transfer Ready Channel pieces from one location to another
+router.post('/:id/transfer', async (req, res) => {
+  const { from_location, to_location, quantity } = req.body;
+
+  // Basic validations
+  if (!from_location || !to_location) {
+    return res.status(400).json({ message: 'from_location and to_location are required' });
+  }
+  if (from_location === to_location) {
+    return res.status(400).json({ message: 'From and To locations must be different' });
+  }
+  const qty = parseInt(quantity);
+  if (!qty || qty <= 0) {
+    return res.status(400).json({ message: 'Quantity must be a positive number' });
+  }
+
+  try {
+    const [invRows] = await db.query('SELECT * FROM prixel_inventory WHERE id = ?', [req.params.id]);
+    if (invRows.length === 0) return res.status(404).json({ message: 'Inventory item not found' });
+
+    const item = invRows[0];
+    if (item.inventory_type !== 'Ready Channel') {
+      return res.status(400).json({ message: 'Transfers are only supported for Ready Channel inventory' });
+    }
+
+    const stock = JSON.parse(item.location_stock || '{}');
+    const fromStock = parseInt(stock[from_location]) || 0;
+
+    if (fromStock <= 0) {
+      return res.status(400).json({ message: `No stock available at "${from_location}"` });
+    }
+
+    // Check dispatched holds at the from_location
+    const [dispatchedHolds] = await db.query(
+      `SELECT h.held_pieces, o.delivery_method, o.pickup_location, o.source_location
+       FROM prixel_inventory_holds h
+       JOIN prixel_orders o ON o.order_id = h.order_id
+       WHERE h.inventory_id = ?
+         AND h.status = 'held'
+         AND o.order_status = 'Ready for Pickup/Delivery'`,
+      [req.params.id]
+    );
+
+    let dispatchedHeldAtFrom = 0;
+    for (const hold of dispatchedHolds) {
+      const heldPieces = parseInt(hold.held_pieces) || 0;
+      if (heldPieces <= 0) continue;
+
+      let loc = null;
+      if (hold.delivery_method === 'pickup' && hold.pickup_location) {
+        loc = hold.pickup_location;
+      } else if (hold.source_location) {
+        loc = hold.source_location;
+      }
+      if (loc === from_location) {
+        dispatchedHeldAtFrom += heldPieces;
+      }
+    }
+
+    const available = Math.max(0, fromStock - dispatchedHeldAtFrom);
+    if (qty > available) {
+      return res.status(400).json({
+        message: `Cannot transfer ${qty} pcs. Only ${available} available at "${from_location}" (${fromStock} total, ${dispatchedHeldAtFrom} held by dispatched orders)`,
+      });
+    }
+
+    // Perform the transfer
+    stock[from_location] = fromStock - qty;
+    stock[to_location] = (parseInt(stock[to_location]) || 0) + qty;
+
+    // Clean up: remove location key if stock becomes 0
+    if (stock[from_location] <= 0) {
+      delete stock[from_location];
+    }
+
+    await db.query(
+      'UPDATE prixel_inventory SET location_stock = ? WHERE id = ?',
+      [JSON.stringify(stock), req.params.id]
+    );
+
+    // Build stock breakdown for response
+    const breakdown = {};
+    for (const [location, pieces] of Object.entries(stock)) {
+      const total = parseInt(pieces) || 0;
+      // Recalculate dispatched held for each location
+      let held = 0;
+      for (const hold of dispatchedHolds) {
+        const heldPieces = parseInt(hold.held_pieces) || 0;
+        if (heldPieces <= 0) continue;
+        let loc = null;
+        if (hold.delivery_method === 'pickup' && hold.pickup_location) {
+          loc = hold.pickup_location;
+        } else if (hold.source_location) {
+          loc = hold.source_location;
+        }
+        if (loc === location) held += heldPieces;
+      }
+      breakdown[location] = {
+        total,
+        dispatched_held: Math.min(held, total),
+        available: Math.max(0, total - held),
+      };
+    }
+
+    // Fetch updated row
+    const [updatedRows] = await db.query('SELECT * FROM prixel_inventory WHERE id = ?', [req.params.id]);
+
+    res.json({
+      message: `Transferred ${qty} pcs from "${from_location}" → "${to_location}"`,
+      data: updatedRows[0],
+      stock_breakdown: breakdown,
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to transfer stock', error: err.message });
+  }
+});
+
 // ── GET /api/inventory/:id ──────────────────────────────────────
 router.get('/:id', async (req, res) => {
   try {

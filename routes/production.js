@@ -58,7 +58,7 @@ router.get('/:id', async (req, res) => {
     let order = null;
     if (production.order_id) {
       const [orderRows] = await db.query(
-        `SELECT o.*, c.company_name, c.contact_name
+        `SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name
          FROM prixel_orders o
          LEFT JOIN prixel_customers c ON c.id = o.customer_id
          WHERE o.order_id = ?`,

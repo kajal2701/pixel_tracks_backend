@@ -188,7 +188,7 @@ router.post('/generate', async (req, res) => {
   try {
     // 1. Fetch orders with customer pricing
     const [orders] = await db.query(
-      `SELECT o.*, c.channel_pricing, c.id AS cust_id
+      `SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.channel_pricing, c.id AS cust_id
        FROM prixel_orders o
        LEFT JOIN prixel_customers c ON c.id = o.customer_id
        WHERE o.id IN (?)`,

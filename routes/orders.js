@@ -29,7 +29,7 @@ router.get('/', async (req, res) => {
   const { status, customer_id, search, quick_access } = req.query;
 
   let sql = `
-    SELECT o.*, c.company_name, c.contact_name, c.email
+    SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email
     FROM prixel_orders o
     LEFT JOIN prixel_customers c ON c.id = o.customer_id
     WHERE 1=1
@@ -88,7 +88,7 @@ router.get('/', async (req, res) => {
 // ── GET /api/orders/:id ─────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   const sql = `
-    SELECT o.*, c.company_name, c.contact_name, c.email
+    SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email
     FROM prixel_orders o
     LEFT JOIN prixel_customers c ON c.id = o.customer_id
     WHERE o.id = ?
@@ -167,7 +167,7 @@ router.post('/', async (req, res) => {
     }
 
     const [rows] = await db.query(
-      `SELECT o.*, c.company_name, c.contact_name, c.email
+      `SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email
        FROM prixel_orders o
        LEFT JOIN prixel_customers c ON c.id = o.customer_id
        WHERE o.id = ?`,
@@ -235,7 +235,7 @@ router.put('/:id', async (req, res) => {
     if (result.affectedRows === 0) return res.status(404).json({ message: 'Order not found' });
 
     const [rows] = await db.query(
-      `SELECT o.*, c.company_name, c.contact_name, c.email
+      `SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email
        FROM prixel_orders o
        LEFT JOIN prixel_customers c ON c.id = o.customer_id
        WHERE o.id = ?`,
@@ -257,7 +257,7 @@ router.patch('/:id/notes', async (req, res) => {
       [additional_notes ?? null, req.params.id]
     );
     const [rows] = await db.query(
-      `SELECT o.*, c.company_name, c.contact_name, c.email
+      `SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email
        FROM prixel_orders o
        LEFT JOIN prixel_customers c ON c.id = o.customer_id
        WHERE o.id = ?`,
@@ -306,7 +306,7 @@ router.post('/:id/confirm', async (req, res) => {
 
     // Fetch full order with customer info for the email
     const [confirmedRows] = await db.query(
-      `SELECT o.*, c.company_name, c.contact_name, c.email
+      `SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email
        FROM prixel_orders o
        LEFT JOIN prixel_customers c ON c.id = o.customer_id
        WHERE o.id = ?`,
@@ -567,7 +567,7 @@ router.patch('/:id/status', async (req, res) => {
     }
 
     const [rows] = await db.query(
-      `SELECT o.*, c.company_name, c.contact_name, c.email
+      `SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email
        FROM prixel_orders o
        LEFT JOIN prixel_customers c ON c.id = o.customer_id
        WHERE o.id = ?`,
@@ -657,7 +657,7 @@ router.patch('/:id/modification', async (req, res) => {
     if (result.affectedRows === 0) return res.status(404).json({ message: 'Order not found' });
 
     const [rows] = await db.query(
-      `SELECT o.*, c.company_name, c.contact_name, c.email
+      `SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email
        FROM prixel_orders o
        LEFT JOIN prixel_customers c ON c.id = o.customer_id
        WHERE o.id = ?`,
@@ -704,7 +704,7 @@ router.post('/:id/modification/resolve', async (req, res) => {
 
     if (action === 'approve') {
       const { pickup_date, pickup_location, note } = pendingChanges;
-      
+
       const fieldsToUpdate = [];
       const values = [];
 
@@ -718,7 +718,7 @@ router.post('/:id/modification/resolve', async (req, res) => {
       pendingChanges.status = 'approved';
       fieldsToUpdate.push('modification_notes = ?');
       values.push(JSON.stringify(pendingChanges));
-      
+
       values.push(req.params.id);
 
       await db.query(
