@@ -470,6 +470,49 @@ export const sendOrderPickedUpOpsEmail = async (order) => {
 };
 
 /**
+ * Send order completed email to customer
+ * Fired when an order status is changed to "Completed"
+ */
+export const sendOrderCompletedEmail = async (order) => {
+  const backendUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 8000}`;
+
+  const isPickup = order.delivery_method === 'pickup';
+  const deliveryAddress = isPickup
+    ? (order.pickup_location || 'To be determined')
+    : (order.delivery_address || 'To be determined');
+
+  const html = renderTemplate("orderCompleted", {
+    logoUrl: `${backendUrl}/uploads/email/light_logo.png`,
+    greeting: `Hello <strong>${order.contact_name || order.company_name}</strong>,`,
+    introMessage: isPickup
+      ? `Your order has been <strong style="color: #2e7d32;">completed</strong>. Thank you for picking it up!`
+      : `Your order has been <strong style="color: #2e7d32;">completed</strong> and delivered successfully!`,
+    orderId: order.order_id,
+    channelType: order.channel_type,
+    color: order.color,
+    holeDistance: order.hole_distance,
+    channelLength: order.channel_length,
+    totalLength: order.total_length,
+    totalPieces: order.total_pieces,
+    finalLength: order.final_length,
+    deliveryIcon: isPickup ? '📦' : '🚚',
+    deliveryLabel: isPickup ? 'Pickup Details' : 'Delivery Details',
+    deliveryAddress,
+    deliveryNote: isPickup
+      ? `Order was picked up from the above location.`
+      : `Order was delivered to the above address.`,
+    noteBody: `Thank you for choosing Pixel Tracks & Lights! If you have any questions or concerns about your order, feel free to reach out to us.`,
+    year: new Date().getFullYear().toString(),
+  });
+
+  return sendMail({
+    to: order.email,
+    subject: `Order Completed — ${order.order_id}`,
+    html,
+  });
+};
+
+/**
  * Send invoice email — works for both customer and sales team.
  * @param {Object} invoice - invoice row
  * @param {Object} customerInfo - { contact_name, company_name, email }

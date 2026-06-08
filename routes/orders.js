@@ -15,6 +15,7 @@ import {
   sendOrderReceivedSalesEmail,
   sendOrderPickedUpSalesEmail,
   sendOrderPickedUpOpsEmail,
+  sendOrderCompletedEmail,
 } from '../services/emailService.js';
 
 const router = Router();
@@ -600,6 +601,11 @@ router.patch('/:id/status', async (req, res) => {
         console.error(`[MAIL] Failed to send dispatched ops email for order ${rows[0]?.order_id}:`, err.message);
       });
     } else if (order_status === 'Completed') {
+      // Fire-and-forget: send order completed email to customer
+      sendOrderCompletedEmail(rows[0]).catch(err => {
+        console.error(`[MAIL] Failed to send completed email for order ${rows[0]?.order_id}:`, err.message);
+      });
+
       // Fire-and-forget: notify sales team that order has been picked up / delivered
       sendOrderPickedUpSalesEmail(rows[0]).catch(err => {
         console.error(`[MAIL] Failed to send picked up sales email for order ${rows[0]?.order_id}:`, err.message);
