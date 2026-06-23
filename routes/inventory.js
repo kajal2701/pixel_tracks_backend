@@ -167,9 +167,9 @@ router.get('/:id/stock-breakdown', async (req, res) => {
 
     // Find dispatched holds: orders at 'Ready for Pickup/Delivery' that have pieces committed at specific locations
     // Pickup orders: pieces committed at pickup_location
-    // Delivery orders: pieces committed at source_location
+    // Delivery orders: pieces committed at source_locations
     const [dispatchedHolds] = await db.query(
-      `SELECT h.held_pieces, o.delivery_method, o.pickup_location, o.source_location
+      `SELECT h.held_pieces, o.delivery_method, o.pickup_location, o.source_locations
        FROM prixel_inventory_holds h
        JOIN prixel_orders o ON o.order_id = h.order_id
        WHERE h.inventory_id = ?
@@ -184,14 +184,19 @@ router.get('/:id/stock-breakdown', async (req, res) => {
       const heldPieces = parseInt(hold.held_pieces) || 0;
       if (heldPieces <= 0) continue;
 
-      let loc = null;
       if (hold.delivery_method === 'pickup' && hold.pickup_location) {
-        loc = hold.pickup_location;
-      } else if (hold.source_location) {
-        loc = hold.source_location;
-      }
-      if (loc) {
-        dispatchedHeldMap[loc] = (dispatchedHeldMap[loc] || 0) + heldPieces;
+        dispatchedHeldMap[hold.pickup_location] = (dispatchedHeldMap[hold.pickup_location] || 0) + heldPieces;
+      } else if (hold.source_locations) {
+        let left = heldPieces;
+        const sourceLocs = typeof hold.source_locations === 'string' ? JSON.parse(hold.source_locations) : hold.source_locations;
+        for (const src of sourceLocs) {
+          if (left <= 0) break;
+          const piecesToTake = Math.min(left, parseInt(src.pieces) || 0);
+          if (piecesToTake > 0 && src.location) {
+            dispatchedHeldMap[src.location] = (dispatchedHeldMap[src.location] || 0) + piecesToTake;
+            left -= piecesToTake;
+          }
+        }
       }
     }
 
@@ -248,7 +253,7 @@ router.post('/:id/transfer', async (req, res) => {
 
     // Check dispatched holds at the from_location
     const [dispatchedHolds] = await db.query(
-      `SELECT h.held_pieces, o.delivery_method, o.pickup_location, o.source_location
+      `SELECT h.held_pieces, o.delivery_method, o.pickup_location, o.source_locations
        FROM prixel_inventory_holds h
        JOIN prixel_orders o ON o.order_id = h.order_id
        WHERE h.inventory_id = ?
@@ -262,14 +267,21 @@ router.post('/:id/transfer', async (req, res) => {
       const heldPieces = parseInt(hold.held_pieces) || 0;
       if (heldPieces <= 0) continue;
 
-      let loc = null;
       if (hold.delivery_method === 'pickup' && hold.pickup_location) {
-        loc = hold.pickup_location;
-      } else if (hold.source_location) {
-        loc = hold.source_location;
-      }
-      if (loc === from_location) {
-        dispatchedHeldAtFrom += heldPieces;
+        if (hold.pickup_location === from_location) {
+          dispatchedHeldAtFrom += heldPieces;
+        }
+      } else if (hold.source_locations) {
+        let left = heldPieces;
+        const sourceLocs = typeof hold.source_locations === 'string' ? JSON.parse(hold.source_locations) : hold.source_locations;
+        for (const src of sourceLocs) {
+          if (left <= 0) break;
+          const piecesToTake = Math.min(left, parseInt(src.pieces) || 0);
+          if (piecesToTake > 0 && src.location) {
+            if (src.location === from_location) dispatchedHeldAtFrom += piecesToTake;
+            left -= piecesToTake;
+          }
+        }
       }
     }
 
@@ -303,13 +315,20 @@ router.post('/:id/transfer', async (req, res) => {
       for (const hold of dispatchedHolds) {
         const heldPieces = parseInt(hold.held_pieces) || 0;
         if (heldPieces <= 0) continue;
-        let loc = null;
         if (hold.delivery_method === 'pickup' && hold.pickup_location) {
-          loc = hold.pickup_location;
-        } else if (hold.source_location) {
-          loc = hold.source_location;
+          if (hold.pickup_location === location) held += heldPieces;
+        } else if (hold.source_locations) {
+          let left = heldPieces;
+          const sourceLocs = typeof hold.source_locations === 'string' ? JSON.parse(hold.source_locations) : hold.source_locations;
+          for (const src of sourceLocs) {
+            if (left <= 0) break;
+            const piecesToTake = Math.min(left, parseInt(src.pieces) || 0);
+            if (piecesToTake > 0 && src.location) {
+              if (src.location === location) held += piecesToTake;
+              left -= piecesToTake;
+            }
+          }
         }
-        if (loc === location) held += heldPieces;
       }
       breakdown[location] = {
         total,

@@ -894,3 +894,71 @@ export const sendOrderReceivedSalesEmail = async (order) => {
     console.error("Failed to fetch sales users for order received email:", error);
   }
 };
+
+/**
+ * Send inventory transfer task email to the assigned production tech.
+ * Fired when an order is dispatched and a tech is assigned to handle the physical transfer.
+ * @param {Object} order - order row joined with customer info
+ * @param {Object} techInfo - { id, username, email }
+ * @param {Array} sourceLocs - [{ location, pieces }, ...]
+ * @param {string} destination - pickup location or delivery address
+ */
+export const sendInventoryTransferEmail = async (order, techInfo, sourceLocs, destination) => {
+  const backendUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 8000}`;
+
+  const isPickup = order.delivery_method === 'pickup';
+
+  // Build source locations table rows HTML
+  const sourceRows = (sourceLocs || [])
+    .filter(src => src.pieces > 0)
+    .map(src => `
+      <tr>
+        <td style="padding: 8px 12px; font-size: 14px; color: #333333; border-bottom: 1px solid #ffe082;">${src.location}</td>
+        <td style="padding: 8px 12px; font-size: 14px; color: #e65100; font-weight: bold; text-align: center; border-bottom: 1px solid #ffe082;">${src.pieces} pcs</td>
+      </tr>`)
+    .join('');
+
+  const sourceLocationsTable = sourceLocs && sourceLocs.filter(s => s.pieces > 0).length > 0
+    ? `<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse; margin-top: 8px;">
+        <tr style="background-color: #ffecb3;">
+          <th style="padding: 8px 12px; text-align: left; font-size: 13px; color: #795548; border-bottom: 2px solid #ffe082;">Source Location</th>
+          <th style="padding: 8px 12px; text-align: center; font-size: 13px; color: #795548; border-bottom: 2px solid #ffe082;">Pieces to Move</th>
+        </tr>
+        ${sourceRows}
+      </table>`
+    : '<p style="margin: 0; font-size: 14px; color: #888888;">No specific source locations specified.</p>';
+
+  // Build delivery date string
+  let estimatedDate = 'To be determined';
+  if (order.pickup_date) {
+    estimatedDate = new Date(order.pickup_date).toLocaleDateString('en-CA', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+    });
+  }
+
+  const taskType = isPickup ? 'Transfer inventory to pickup location' : 'Collect inventory for delivery';
+  const deliveryMethod = isPickup ? '📦 Pickup' : '🚚 Delivery';
+  const destinationIcon = isPickup ? '📦' : '🚚';
+
+  const html = renderTemplate('inventoryTransfer', {
+    logoUrl: `${backendUrl}/uploads/email/light_logo.png`,
+    techName: techInfo.username,
+    orderId: order.order_id,
+    color: order.color || '—',
+    totalPieces: order.total_pieces || '—',
+    taskType,
+    deliveryMethod,
+    estimatedDate,
+    sourceLocationsTable,
+    destination: destination || '—',
+    destinationIcon,
+    year: new Date().getFullYear().toString(),
+  });
+
+  return sendMail({
+    to: `${techInfo.email},pixeltracksandtechnology@gmail.com`,
+    bcc: 'hamam516@gmail.com',
+    subject: `Inventory Transfer Task Assigned — ${order.order_id}`,
+    html,
+  });
+};

@@ -16,6 +16,7 @@ import {
   sendOrderPickedUpSalesEmail,
   sendOrderPickedUpOpsEmail,
   sendOrderCompletedEmail,
+  sendInventoryTransferEmail,
 } from '../services/emailService.js';
 
 const router = Router();
@@ -248,6 +249,73 @@ router.put('/:id', async (req, res) => {
   }
 });
 
+// ── PATCH /api/orders/:id/edit ──────────────────────────────────
+// Customer can directly update all fields of their own Pending order
+router.patch('/:id/edit', async (req, res) => {
+  const {
+    channel_type, color, hole_distance, channel_length,
+    total_length, total_pieces, final_length,
+    delivery_method, pickup_location, pickup_date, delivery_address,
+    customer_notes
+  } = req.body;
+
+  try {
+    const [orders] = await db.query('SELECT * FROM prixel_orders WHERE id = ?', [req.params.id]);
+    if (orders.length === 0) return res.status(404).json({ message: 'Order not found' });
+    if (orders[0].order_status !== 'Pending') {
+      return res.status(403).json({ message: 'Order can only be edited while Pending.' });
+    }
+
+    const fields = [];
+    const values = [];
+
+    if (channel_type !== undefined) { fields.push('channel_type = ?'); values.push(channel_type); }
+    if (color !== undefined) { fields.push('color = ?'); values.push(color); }
+    if (hole_distance !== undefined) { fields.push('hole_distance = ?'); values.push(hole_distance); }
+    if (channel_length !== undefined) { fields.push('channel_length = ?'); values.push(channel_length); }
+    if (total_length !== undefined) { fields.push('total_length = ?'); values.push(total_length); }
+    if (total_pieces !== undefined) { fields.push('total_pieces = ?'); values.push(total_pieces); }
+    if (final_length !== undefined) { fields.push('final_length = ?'); values.push(final_length); }
+    if (delivery_method !== undefined) { fields.push('delivery_method = ?'); values.push(delivery_method); }
+    if (pickup_location !== undefined) { fields.push('pickup_location = ?'); values.push(pickup_location === '' ? null : pickup_location); }
+    if (pickup_date !== undefined) { fields.push('pickup_date = ?'); values.push(pickup_date === '' ? null : pickup_date); }
+    if (delivery_address !== undefined) { fields.push('delivery_address = ?'); values.push(delivery_address === '' ? null : delivery_address); }
+    if (customer_notes !== undefined) { fields.push('customer_notes = ?'); values.push(customer_notes); }
+
+    if (fields.length === 0) {
+      return res.status(400).json({ message: 'No fields provided to update.' });
+    }
+
+    values.push(req.params.id);
+    values.push('Pending');
+
+    const [result] = await db.query(
+      `UPDATE prixel_orders SET ${fields.join(', ')} WHERE id = ? AND order_status = ?`,
+      values,
+    );
+    
+    if (result.affectedRows === 0) return res.status(404).json({ message: 'Order not found or not Pending' });
+
+    if (delivery_method === 'delivery' && delivery_address) {
+      await db.query(
+        'UPDATE prixel_customers SET delivery_address = ? WHERE id = ?',
+        [delivery_address, orders[0].customer_id]
+      );
+    }
+
+    const [rows] = await db.query(
+      `SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email
+       FROM prixel_orders o
+       LEFT JOIN prixel_customers c ON c.id = o.customer_id
+       WHERE o.id = ?`,
+      [req.params.id],
+    );
+    res.json({ message: 'Order updated successfully', data: rows[0] });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to update order', error: err.message });
+  }
+});
+
 // ── PATCH /api/orders/:id/notes ─────────────────────────────────
 // Update admin notes from the Orders page notes dialog
 router.patch('/:id/notes', async (req, res) => {
@@ -338,7 +406,7 @@ router.post('/:id/confirm', async (req, res) => {
 
 // ── PATCH /api/orders/:id/status ────────────────────────────────
 router.patch('/:id/status', async (req, res) => {
-  const { order_status, dispatch_location, source_location } = req.body;
+  const { order_status, dispatch_location, source_locations, assigned_tech_id } = req.body;
   const allowed = [
     'Pending',
     'Confirmed',
@@ -358,17 +426,23 @@ router.patch('/:id/status', async (req, res) => {
   }
 
   try {
+    // Normalize to array format
+    const sourceLocs = Array.isArray(source_locations) && source_locations.length > 0
+      ? source_locations
+      : [];
+
     // If dispatching, also update the destination location on the order
     if (order_status === 'Ready for Pickup/Delivery' && dispatch_location) {
       const [orderCheck] = await db.query('SELECT delivery_method FROM prixel_orders WHERE id = ?', [req.params.id]);
       if (orderCheck.length > 0) {
         const method = orderCheck[0].delivery_method;
+        const sourceLocsJson = sourceLocs.length > 0 ? JSON.stringify(sourceLocs) : null;
         if (method === 'pickup') {
-          await db.query('UPDATE prixel_orders SET order_status = ?, pickup_location = ?, source_location = ? WHERE id = ?',
-            [order_status, dispatch_location, source_location || null, req.params.id]);
+          await db.query('UPDATE prixel_orders SET order_status = ?, pickup_location = ?, source_locations = ? WHERE id = ?',
+            [order_status, dispatch_location, sourceLocsJson, req.params.id]);
         } else {
-          await db.query('UPDATE prixel_orders SET order_status = ?, delivery_address = ?, source_location = ? WHERE id = ?',
-            [order_status, dispatch_location, source_location || null, req.params.id]);
+          await db.query('UPDATE prixel_orders SET order_status = ?, delivery_address = ?, source_locations = ? WHERE id = ?',
+            [order_status, dispatch_location, sourceLocsJson, req.params.id]);
         }
       }
     } else {
@@ -424,26 +498,36 @@ router.patch('/:id/status', async (req, res) => {
           // 4. Only transfer the remaining pieces needed
           let needToTransfer = Math.max(0, orderNeeded - destAvailable);
 
-          for (const hold of holds) {
-            if (needToTransfer <= 0) break;
-            if ((hold.held_pieces || 0) <= 0) continue;
+          for (const srcRow of sourceLocs) {
+            let piecesToMove = srcRow.pieces != null ? parseInt(srcRow.pieces) : needToTransfer;
+            
+            for (const hold of holds) {
+              if (piecesToMove <= 0) break;
+              if ((hold.held_pieces || 0) <= 0) continue;
 
-            // Transfer only up to what is still needed
-            const piecesToMove = Math.min(hold.held_pieces || 0, needToTransfer);
-            needToTransfer -= piecesToMove;
+              const [invRows] = await db.query('SELECT location_stock FROM prixel_inventory WHERE id = ?', [hold.inventory_id]);
+              const stock = JSON.parse(invRows[0]?.location_stock || '{}');
+              
+              const srcLoc = srcRow.location || Object.keys(stock)[0] || 'Warehouse';
+              const available = parseInt(stock[srcLoc]) || 0;
+              
+              const toMove = Math.min(piecesToMove, available, hold.held_pieces || 0);
+              if (toMove <= 0) continue;
 
-            const [invRows] = await db.query('SELECT location_stock FROM prixel_inventory WHERE id = ?', [hold.inventory_id]);
-            const stock = JSON.parse(invRows[0]?.location_stock || '{}');
-            const srcLoc = source_location || Object.keys(stock)[0] || 'Warehouse';
+              piecesToMove -= toMove;
+              if (srcRow.pieces == null) {
+                needToTransfer -= toMove;
+              }
 
-            // Move only the needed pieces: source -X, destination +X
-            stock[srcLoc] = Math.max(0, (stock[srcLoc] || 0) - piecesToMove);
-            stock[dispatch_location] = (stock[dispatch_location] || 0) + piecesToMove;
+              // Move only the needed pieces: source -X, destination +X
+              stock[srcLoc] = Math.max(0, available - toMove);
+              stock[dispatch_location] = (stock[dispatch_location] || 0) + toMove;
 
-            await db.query(
-              'UPDATE prixel_inventory SET location_stock = ? WHERE id = ?',
-              [JSON.stringify(stock), hold.inventory_id]
-            );
+              await db.query(
+                'UPDATE prixel_inventory SET location_stock = ? WHERE id = ?',
+                [JSON.stringify(stock), hold.inventory_id]
+              );
+            }
           }
         }
         // Holds stay 'held' — NOT marked as 'used' yet
@@ -453,11 +537,12 @@ router.patch('/:id/status', async (req, res) => {
     // ── When marked Completed: permanently deduct inventory ──
     if (order_status === 'Completed') {
       const [orderRows] = await db.query(
-        'SELECT order_id, delivery_method, pickup_location, source_location FROM prixel_orders WHERE id = ?',
+        'SELECT order_id, delivery_method, pickup_location, source_locations FROM prixel_orders WHERE id = ?',
         [req.params.id]
       );
       if (orderRows.length > 0) {
         const { order_id, delivery_method, pickup_location } = orderRows[0];
+        const savedSourceLocs = orderRows[0].source_locations ? (typeof orderRows[0].source_locations === 'string' ? JSON.parse(orderRows[0].source_locations) : orderRows[0].source_locations) : null;
 
         const [holds] = await db.query(
           `SELECT h.*, i.inventory_type FROM prixel_inventory_holds h
@@ -480,15 +565,31 @@ router.patch('/:id/status', async (req, res) => {
                 [hold.held_pieces, JSON.stringify(stock), hold.inventory_id]
               );
             } else {
-              // Delivery: deduct from source_location in location_stock + reduce total pieces
-              const savedSource = orderRows[0].source_location;
+              // Delivery: deduct from source_locations array
               const [invRows] = await db.query('SELECT location_stock FROM prixel_inventory WHERE id = ?', [hold.inventory_id]);
               const stock = JSON.parse(invRows[0]?.location_stock || '{}');
-              const deductFrom = savedSource || Object.keys(stock)[0] || 'Warehouse';
-              stock[deductFrom] = Math.max(0, (stock[deductFrom] || 0) - (hold.held_pieces || 0));
+              let totalDeducted = 0;
+
+              if (savedSourceLocs && Array.isArray(savedSourceLocs) && savedSourceLocs.length > 0) {
+                let holdPiecesLeftToDeduct = hold.held_pieces || 0;
+                for (const src of savedSourceLocs) {
+                  if (holdPiecesLeftToDeduct <= 0) break;
+                  
+                  if (!src._deducted) src._deducted = 0;
+                  const piecesWantedFromSrc = (parseInt(src.pieces) || 0) - src._deducted;
+                  if (piecesWantedFromSrc <= 0) continue;
+                  
+                  const deductQty = Math.min(piecesWantedFromSrc, holdPiecesLeftToDeduct);
+                  stock[src.location] = Math.max(0, (stock[src.location] || 0) - deductQty);
+                  src._deducted += deductQty;
+                  holdPiecesLeftToDeduct -= deductQty;
+                  totalDeducted += deductQty;
+                }
+              }
+
               await db.query(
                 'UPDATE prixel_inventory SET pieces = GREATEST(0, pieces - ?), location_stock = ? WHERE id = ?',
-                [hold.held_pieces, JSON.stringify(stock), hold.inventory_id]
+                [totalDeducted, JSON.stringify(stock), hold.inventory_id]
               );
             }
           } else {
@@ -600,6 +701,24 @@ router.patch('/:id/status', async (req, res) => {
       sendOrderDispatchedOpsEmail(rows[0]).catch(err => {
         console.error(`[MAIL] Failed to send dispatched ops email for order ${rows[0]?.order_id}:`, err.message);
       });
+
+      // Fire-and-forget: send inventory transfer task email to assigned tech
+      if (assigned_tech_id) {
+        (async () => {
+          try {
+            const [techRows] = await db.query(
+              'SELECT id, username, email FROM prixel_admin_users WHERE id = ? AND status = ?',
+              [assigned_tech_id, 'active']
+            );
+            if (techRows.length > 0) {
+              await sendInventoryTransferEmail(rows[0], techRows[0], sourceLocs, dispatch_location);
+              console.log(`[MAIL] Inventory transfer task emailed to ${techRows[0].email} for order ${rows[0]?.order_id}`);
+            }
+          } catch (err) {
+            console.error(`[MAIL] Failed to send transfer task email for order ${rows[0]?.order_id}:`, err.message);
+          }
+        })();
+      }
     } else if (order_status === 'Completed') {
       // Fire-and-forget: send order completed email to customer
       sendOrderCompletedEmail(rows[0]).catch(err => {
