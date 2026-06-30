@@ -962,3 +962,41 @@ export const sendInventoryTransferEmail = async (order, techInfo, sourceLocs, de
     html,
   });
 };
+
+/**
+ * Send order modification email to customer and admin
+ * Fired when a customer edits their own pending order
+ */
+export const sendCustomerOrderModificationEmail = async (order) => {
+  const backendUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 8000}`;
+
+  const greeting = `Hello <strong>${order.contact_name || order.company_name}</strong>,`;
+  const introMessage = `Your order <strong>${order.order_id}</strong> has been successfully updated. Here are the current details:`;
+  const noteHeading = `Order Updated`;
+  const noteBody = `You have modified your pending order. Our team has been notified of the changes.`;
+
+  const html = renderTemplate("customerOrderModification", {
+    logoUrl: `${backendUrl}/uploads/email/light_logo.png`,
+    greeting,
+    introMessage,
+    noteHeading,
+    noteBody,
+    orderId: order.order_id,
+    channelType: order.channel_type,
+    color: order.color,
+    holeDistance: order.hole_distance,
+    channelLength: order.channel_length,
+    totalLength: order.total_length,
+    totalPieces: order.total_pieces,
+    finalLength: order.final_length,
+    orderStatus: order.order_status,
+    year: new Date().getFullYear().toString(),
+  });
+
+  return sendMail({
+    to: `${order.email},pixeltracksandtechnology@gmail.com`,
+    bcc: 'hamam516@gmail.com',
+    subject: `Order Modification — ${order.order_id}`,
+    html,
+  });
+};

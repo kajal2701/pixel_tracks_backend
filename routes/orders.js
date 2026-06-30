@@ -17,6 +17,7 @@ import {
   sendOrderPickedUpOpsEmail,
   sendOrderCompletedEmail,
   sendInventoryTransferEmail,
+  sendCustomerOrderModificationEmail,
 } from '../services/emailService.js';
 
 const router = Router();
@@ -311,6 +312,11 @@ router.patch('/:id/edit', async (req, res) => {
       [req.params.id],
     );
     res.json({ message: 'Order updated successfully', data: rows[0] });
+
+    // Fire-and-forget: send email to customer and admin
+    sendCustomerOrderModificationEmail(rows[0]).catch(err => {
+      console.error(`[MAIL] Failed to send customer order modification email for order ${rows[0]?.order_id}:`, err.message);
+    });
   } catch (err) {
     res.status(500).json({ message: 'Failed to update order', error: err.message });
   }
