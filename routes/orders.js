@@ -294,7 +294,7 @@ router.patch('/:id/edit', async (req, res) => {
       `UPDATE prixel_orders SET ${fields.join(', ')} WHERE id = ? AND order_status = ?`,
       values,
     );
-    
+
     if (result.affectedRows === 0) return res.status(404).json({ message: 'Order not found or not Pending' });
 
     if (delivery_method === 'delivery' && delivery_address) {
@@ -506,17 +506,17 @@ router.patch('/:id/status', async (req, res) => {
 
           for (const srcRow of sourceLocs) {
             let piecesToMove = srcRow.pieces != null ? parseInt(srcRow.pieces) : needToTransfer;
-            
+
             for (const hold of holds) {
               if (piecesToMove <= 0) break;
               if ((hold.held_pieces || 0) <= 0) continue;
 
               const [invRows] = await db.query('SELECT location_stock FROM prixel_inventory WHERE id = ?', [hold.inventory_id]);
               const stock = JSON.parse(invRows[0]?.location_stock || '{}');
-              
+
               const srcLoc = srcRow.location || Object.keys(stock)[0] || 'Warehouse';
               const available = parseInt(stock[srcLoc]) || 0;
-              
+
               const toMove = Math.min(piecesToMove, available, hold.held_pieces || 0);
               if (toMove <= 0) continue;
 
@@ -580,11 +580,11 @@ router.patch('/:id/status', async (req, res) => {
                 let holdPiecesLeftToDeduct = hold.held_pieces || 0;
                 for (const src of savedSourceLocs) {
                   if (holdPiecesLeftToDeduct <= 0) break;
-                  
+
                   if (!src._deducted) src._deducted = 0;
                   const piecesWantedFromSrc = (parseInt(src.pieces) || 0) - src._deducted;
                   if (piecesWantedFromSrc <= 0) continue;
-                  
+
                   const deductQty = Math.min(piecesWantedFromSrc, holdPiecesLeftToDeduct);
                   stock[src.location] = Math.max(0, (stock[src.location] || 0) - deductQty);
                   src._deducted += deductQty;
@@ -743,26 +743,6 @@ router.patch('/:id/status', async (req, res) => {
     }
   } catch (err) {
     res.status(500).json({ message: 'Failed to update status', error: err.message });
-  }
-});
-
-// ── PATCH /api/orders/:id/notes ─────────────────────────────────
-router.patch('/:id/notes', async (req, res) => {
-  const { additional_notes } = req.body;
-
-  if (additional_notes === undefined) {
-    return res.status(400).json({ message: 'additional_notes is required.' });
-  }
-
-  try {
-    const [result] = await db.query(
-      'UPDATE prixel_orders SET additional_notes = ? WHERE id = ?',
-      [additional_notes, req.params.id],
-    );
-    if (result.affectedRows === 0) return res.status(404).json({ message: 'Order not found' });
-    res.json({ message: 'Notes updated successfully' });
-  } catch (err) {
-    res.status(500).json({ message: 'Failed to update notes', error: err.message });
   }
 });
 
