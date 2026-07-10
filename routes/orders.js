@@ -32,7 +32,8 @@ router.get('/', async (req, res) => {
   const { status, customer_id, search, quick_access } = req.query;
 
   let sql = `
-    SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email
+    SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email,
+           (SELECT production_id FROM prixel_inventory_holds WHERE order_id = o.order_id AND production_id IS NOT NULL LIMIT 1) as linked_production_id
     FROM prixel_orders o
     LEFT JOIN prixel_customers c ON c.id = o.customer_id
     WHERE 1=1
@@ -91,7 +92,8 @@ router.get('/', async (req, res) => {
 // ── GET /api/orders/:id ─────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   const sql = `
-    SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email
+    SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email,
+           (SELECT production_id FROM prixel_inventory_holds WHERE order_id = o.order_id AND production_id IS NOT NULL LIMIT 1) as linked_production_id
     FROM prixel_orders o
     LEFT JOIN prixel_customers c ON c.id = o.customer_id
     WHERE o.id = ?
@@ -108,7 +110,7 @@ router.get('/:id', async (req, res) => {
 // ── POST /api/orders ────────────────────────────────────────────
 router.post('/', async (req, res) => {
   const {
-    customer_id, channel_type, color, hole_distance,
+    customer_id, customer_tag, channel_type, color, hole_distance,
     channel_length, total_length, total_pieces, final_length,
     order_status, additional_notes, customer_notes, quick_access,
     delivery_method, pickup_location, pickup_date, delivery_address,
@@ -140,15 +142,15 @@ router.post('/', async (req, res) => {
 
     const sql = `
       INSERT INTO prixel_orders
-        (order_id, customer_id, channel_type, color, hole_distance,
+        (order_id, customer_id, customer_tag, channel_type, color, hole_distance,
          channel_length, total_length, total_pieces, final_length,
          delivery_method, pickup_location, pickup_date, delivery_address,
          order_status, additional_notes, customer_notes, quick_access)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const values = [
-      order_id, customer_id, channel_type, color, hole_distance,
+      order_id, customer_id, customer_tag ?? null, channel_type, color, hole_distance,
       channel_length, total_length, total_pieces, final_length,
       delivery_method,
       delivery_method === 'pickup' ? (pickup_location ?? null) : null,
@@ -197,6 +199,8 @@ router.post('/', async (req, res) => {
 });
 
 // ── PUT /api/orders/:id ─────────────────────────────────────────
+// not use anywhere for now
+
 router.put('/:id', async (req, res) => {
   const {
     channel_type, color, hole_distance, channel_length,
@@ -254,7 +258,7 @@ router.put('/:id', async (req, res) => {
 // Customer can directly update all fields of their own Pending order
 router.patch('/:id/edit', async (req, res) => {
   const {
-    channel_type, color, hole_distance, channel_length,
+    customer_tag, channel_type, color, hole_distance, channel_length,
     total_length, total_pieces, final_length,
     delivery_method, pickup_location, pickup_date, delivery_address,
     customer_notes
@@ -270,6 +274,7 @@ router.patch('/:id/edit', async (req, res) => {
     const fields = [];
     const values = [];
 
+    if (customer_tag !== undefined) { fields.push('customer_tag = ?'); values.push(customer_tag === '' ? null : customer_tag); }
     if (channel_type !== undefined) { fields.push('channel_type = ?'); values.push(channel_type); }
     if (color !== undefined) { fields.push('color = ?'); values.push(color); }
     if (hole_distance !== undefined) { fields.push('hole_distance = ?'); values.push(hole_distance); }
@@ -346,6 +351,7 @@ router.patch('/:id/notes', async (req, res) => {
 });
 
 // ── POST /api/orders/:id/confirm ────────────────────────────────
+// on confirm first check how many ready channel avaible for this order by calculateInventorySatisfaction, if yes holdOrderInventory function hold only ready channel, here not create the auto production
 router.post('/:id/confirm', async (req, res) => {
   try {
     const [orders] = await db.query('SELECT * FROM prixel_orders WHERE id = ?', [req.params.id]);
@@ -370,14 +376,71 @@ router.post('/:id/confirm', async (req, res) => {
 
     // Calculate how much inventory is immediately satisfied by Ready Channel
     const data = await inventoryService.calculateInventorySatisfaction(color, channel_length, total_pieces);
+    console.log(data, "data")
 
     if (data.readyUsed > 0) {
       // Hold exactly the readyUsed pieces for this order. No production_id.
       await inventoryService.holdOrderInventory(order.order_id, color, channel_length, { readyPieces: data.readyUsed }, null);
     }
 
-    // Update order status to Confirmed
-    await db.query('UPDATE prixel_orders SET order_status = "Confirmed" WHERE id = ?', [req.params.id]);
+    // ── Auto-join Active Step 1 Production (Piggybacking) ──
+    const remainingPieces = total_pieces - data.readyUsed;
+    let autoLinked = false;
+
+    // Check if this order already has Full Roll holds from a production request
+    // (e.g., when "Confirm & Request Production" calls production/request first, then confirm)
+    // If so, skip piggybacking to prevent duplicate holds on the same inventory
+    const [existingProdHolds] = await db.query(
+      `SELECT h.id FROM prixel_inventory_holds h
+       JOIN prixel_inventory i ON i.id = h.inventory_id
+       WHERE h.order_id = ? AND h.status = 'held' AND h.production_id IS NOT NULL
+       AND i.inventory_type IN ('Full Roll', 'Slitted')`,
+      [order.order_id]
+    );
+    const alreadyHasProductionHolds = existingProdHolds.length > 0;
+
+    if (remainingPieces > 0 && data.activeStep1Used > 0 && !alreadyHasProductionHolds) {
+      const takeStep1Pieces = Math.min(remainingPieces, data.activeStep1Used);
+
+      const heldItems = await inventoryService.holdOrderInventory(
+        order.order_id,
+        color,
+        channel_length,
+        { fullRollPieces: takeStep1Pieces },
+        null
+      );
+
+      if (heldItems && heldItems.length > 0) {
+        for (const hold of heldItems) {
+          const invId = hold.inventory_id;
+          const [activeProds] = await db.query(
+            `SELECT id FROM prixel_production 
+             WHERE raw_material_id = ? AND target_state = 'Slitted' 
+               AND status IN ('Pending', 'In Progress') 
+             LIMIT 1`,
+            [invId]
+          );
+          if (activeProds.length > 0) {
+            const prodId = activeProds[0].id;
+            await db.query(
+              `UPDATE prixel_inventory_holds SET production_id = ? 
+               WHERE order_id = ? AND inventory_id = ? AND production_id IS NULL`,
+              [prodId, order.order_id, invId]
+            );
+            autoLinked = true;
+          }
+        }
+      }
+    }
+
+    // If order already had production holds, it's already awaiting production
+    if (alreadyHasProductionHolds) {
+      autoLinked = true;
+    }
+
+    // Update order status
+    const nextStatus = autoLinked ? 'Awaiting production' : 'Confirmed';
+    await db.query('UPDATE prixel_orders SET order_status = ? WHERE id = ?', [nextStatus, req.params.id]);
 
     // Fetch full order with customer info for the email
     const [confirmedRows] = await db.query(
@@ -746,7 +809,9 @@ router.patch('/:id/status', async (req, res) => {
   }
 });
 
+
 // ── PATCH /api/orders/:id/modification ──────────────────────────
+// admin modify these details from the confirm dialogue box
 router.patch('/:id/modification', async (req, res) => {
   const { modification_notes, pickup_date, pickup_location } = req.body;
 
@@ -786,6 +851,7 @@ router.patch('/:id/modification', async (req, res) => {
 });
 
 // ── POST /api/orders/:id/modification/resolve ───────────────────
+// customer has right to approve or cancel the modification request made by admin
 router.post('/:id/modification/resolve', async (req, res) => {
   const { action } = req.body; // 'approve' or 'cancel'
 
@@ -854,6 +920,7 @@ router.post('/:id/modification/resolve', async (req, res) => {
 });
 
 // ── GET /api/orders/:id/check-inventory ─────────────────────────
+// use in confirm dialogue box to show the all inventory availabilty
 router.get('/:id/check-inventory', async (req, res) => {
   try {
     const [orders] = await db.query('SELECT * FROM prixel_orders WHERE id = ?', [req.params.id]);
@@ -861,7 +928,26 @@ router.get('/:id/check-inventory', async (req, res) => {
 
     const { color, channel_length, total_pieces } = orders[0];
     const data = await inventoryService.calculateInventorySatisfaction(color, channel_length, total_pieces);
-    res.json({ data });
+
+    // Find linked products in the same group
+    const linkedProducts = await inventoryService.getLinkedProducts(color);
+    const linkedResults = [];
+
+    for (const linked of linkedProducts) {
+      const linkedColor = `${linked.color} (${linked.color_code}) (${linked.manufacturer})`;
+      const linkedData = await inventoryService.calculateInventorySatisfaction(
+        linkedColor, channel_length, total_pieces
+      );
+
+      linkedResults.push({
+        product_id: linked.id,
+        color_label: linkedColor,
+        supplier: linked.manufacturer,
+        ...linkedData
+      });
+    }
+
+    res.json({ data, linkedResults });
   } catch (err) {
     res.status(err.message.includes('Missing') || err.message.includes('Invalid') ? 400 : 500)
       .json({ message: 'Failed to check inventory', error: err.message });
@@ -870,6 +956,7 @@ router.get('/:id/check-inventory', async (req, res) => {
 
 // ── POST /api/orders/check-inventory-preview ──────────────────────
 // For new orders (frontend check before saving)
+// call in customer order place page for checking invnetory is avaible or not for to determine the pick up date
 router.post('/check-inventory-preview', async (req, res) => {
   try {
     const { color, channel_length, total_pieces } = req.body;
@@ -883,6 +970,7 @@ router.post('/check-inventory-preview', async (req, res) => {
 
 // ── GET /api/orders/:id/inventory-locations ──────────────────────
 // Returns per-location Ready Channel stock for the order's color/length
+// use in dispatch box to get the ready channel inventory only
 router.get('/:id/inventory-locations', async (req, res) => {
   try {
     const [orders] = await db.query('SELECT * FROM prixel_orders WHERE id = ?', [req.params.id]);

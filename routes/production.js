@@ -84,6 +84,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // ── POST /api/production ─────────────────────────────────────────
+
 router.post('/', async (req, res) => {
   const { production_type, order_id, raw_material_id, target_state, qty, size, channel_length, waste_qty, assignee, notes } = req.body;
 
@@ -315,6 +316,11 @@ router.patch('/:id/status', async (req, res) => {
             [hold.held_pieces, JSON.stringify(rcStock), hold.inventory_id]
           );
         } else {
+          // BUG FIX: For Full Roll -> Slitted, ignore proportional holds. Consume whole physical rolls.
+          if (hold.inventory_type === 'Full Roll' && prod.target_state === 'Slitted') {
+            continue;
+          }
+
           const feetUsed = hold.held_feet > 0 ? hold.held_feet : (hold.held_pieces || 0) * sizeNum;
           if (feetUsed <= 0) continue;
           totalFeetUsedAcrossHolds += feetUsed;
@@ -355,6 +361,23 @@ router.patch('/:id/status', async (req, res) => {
 
       // Mark holds as used
       await db.query('UPDATE prixel_inventory_holds SET status = "used" WHERE production_id = ?', [req.params.id]);
+
+      // Explicit deduction for Full Roll -> Slitted (Step 1) jobs
+      // We deduct based on physical reality (prod.qty whole rolls) rather than proportional holds
+      if (prod.raw_material_id && prod.target_state === 'Slitted') {
+        const [rawRows] = await db.query('SELECT inventory_type, size, quantity FROM prixel_inventory WHERE id = ?', [prod.raw_material_id]);
+        if (rawRows.length > 0 && rawRows[0].inventory_type === 'Full Roll') {
+          const currentQty = parseFloat(rawRows[0].quantity) || 1;
+          const consumeRolls = parseInt(prod.qty) || 1;
+          const newQty = Math.max(0, currentQty - consumeRolls);
+
+          if (currentQty <= consumeRolls) {
+            await db.query('UPDATE prixel_inventory SET size = 0, quantity = 0 WHERE id = ?', [prod.raw_material_id]);
+          } else {
+            await db.query('UPDATE prixel_inventory SET quantity = ? WHERE id = ?', [newQty, prod.raw_material_id]);
+          }
+        }
+      }
 
       // Add output to inventory
       if (prod.raw_material_id) {
@@ -452,9 +475,9 @@ router.patch('/:id/status', async (req, res) => {
                 const [orderRows] = await db.query('SELECT total_pieces FROM prixel_orders WHERE order_id = ?', [prod.order_id]);
                 const [heldRows] = await db.query(
                   `SELECT COALESCE(SUM(h.held_pieces), 0) as held
-                   FROM prixel_inventory_holds h
-                   JOIN prixel_inventory i ON i.id = h.inventory_id
-                   WHERE h.order_id = ? AND h.status = 'held' AND i.inventory_type = 'Ready Channel'`,
+                     FROM prixel_inventory_holds h
+                     JOIN prixel_inventory i ON i.id = h.inventory_id
+                     WHERE h.order_id = ? AND h.status = 'held' AND i.inventory_type = 'Ready Channel'`,
                   [prod.order_id]
                 );
                 const remainingNeeded = (orderRows[0]?.total_pieces || 0) - (heldRows[0]?.held || 0);
@@ -463,7 +486,7 @@ router.patch('/:id/status', async (req, res) => {
                 if (piecesToHold > 0) {
                   await db.query(
                     `INSERT INTO prixel_inventory_holds (inventory_id, order_id, production_id, held_pieces, held_quantity, held_feet, status)
-                     VALUES (?, ?, NULL, ?, 0, 0, 'held')`,
+                       VALUES (?, ?, NULL, ?, 0, 0, 'held')`,
                     [invIdToHold, prod.order_id, piecesToHold]
                   );
                 }
@@ -473,65 +496,74 @@ router.patch('/:id/status', async (req, res) => {
             }
 
             // ── AUTO-CREATE STEP 2: Slitted → Ready Channel ──
-            if (targetType === 'Slitted' && prod.production_type === 'Specific Order' && prod.order_id && chLen > 0) {
-              const tracksPerSlit = Math.floor(config.slitted_roll_length / chLen);
-
-              // Calculate how many pieces the order still needs
-              const [orderRows] = await db.query('SELECT total_pieces FROM prixel_orders WHERE order_id = ?', [prod.order_id]);
-              const [heldRows] = await db.query(
-                `SELECT COALESCE(SUM(held_pieces), 0) as held
-                 FROM prixel_inventory_holds h
-                 JOIN prixel_inventory i ON i.id = h.inventory_id
-                 WHERE h.order_id = ? AND h.status = 'held' AND i.inventory_type = 'Ready Channel'`,
-                [prod.order_id]
+            if (targetType === 'Slitted' && prod.production_type === 'Specific Order') {
+              const [sharedOrders] = await db.query(
+                `SELECT DISTINCT order_id FROM prixel_inventory_holds WHERE production_id = ? AND order_id IS NOT NULL`,
+                [req.params.id]
               );
-              const remainingPieces = (orderRows[0]?.total_pieces || 0) - (heldRows[0]?.held || 0);
 
-              if (remainingPieces > 0 && tracksPerSlit > 0) {
-                const slitsNeeded = Math.ceil(remainingPieces / tracksPerSlit);
+              for (const sOrder of sharedOrders) {
+                const oid = sOrder.order_id;
 
-                // Calculate waste
-                const singleSlitWaste = config.slitted_roll_length - (tracksPerSlit * chLen);
-                const step2Waste = (singleSlitWaste * slitsNeeded).toFixed(2);
+                // Get order details
+                const [orderRows] = await db.query('SELECT total_pieces, channel_length, customer_id, pickup_date FROM prixel_orders WHERE order_id = ?', [oid]);
+                if (orderRows.length === 0) continue;
 
-                // Create Step 2 production record
-                const [step2Result] = await db.query(
-                  `INSERT INTO prixel_production
-                    (production_type, order_id, raw_material_id, target_state, qty, size,
-                     channel_length, waste_qty, assignee, status, notes)
-                   VALUES ('Specific Order', ?, ?, 'Ready Channel', ?, ?, ?, ?, ?, 'Pending',
-                     'Auto-created: Cut ready channels from slitted rolls')`,
-                  [prod.order_id, invIdToHold, slitsNeeded,
-                  `${config.slitted_roll_length} ft`, chLen, step2Waste, prod.assignee || null]
+                const oChLen = parseFloat(orderRows[0].channel_length) || 0;
+                if (oChLen <= 0) continue;
+
+                const tracksPerSlit = Math.floor(config.slitted_roll_length / oChLen);
+
+                // Calculate how many pieces the order still needs
+                const [heldRows] = await db.query(
+                  `SELECT COALESCE(SUM(held_pieces), 0) as held
+                   FROM prixel_inventory_holds h
+                   JOIN prixel_inventory i ON i.id = h.inventory_id
+                   WHERE h.order_id = ? AND h.status = 'held' AND i.inventory_type = 'Ready Channel'`,
+                  [oid]
                 );
+                const remainingPieces = (orderRows[0].total_pieces || 0) - (heldRows[0]?.held || 0);
 
-                // Hold the slitted rolls needed for Step 2
-                const step2Id = step2Result.insertId;
-                const holdFeet = slitsNeeded * config.slitted_roll_length;
-                await db.query(
-                  `INSERT INTO prixel_inventory_holds (inventory_id, order_id, production_id, held_pieces, held_quantity, held_feet, status)
-                   VALUES (?, ?, ?, 0, ?, ?, 'held')`,
-                  [invIdToHold, prod.order_id, step2Id, slitsNeeded, holdFeet]
-                );
+                if (remainingPieces > 0 && tracksPerSlit > 0) {
+                  const slitsNeeded = Math.ceil(remainingPieces / tracksPerSlit);
+                  const singleSlitWaste = config.slitted_roll_length - (tracksPerSlit * oChLen);
+                  const step2Waste = (singleSlitWaste * slitsNeeded).toFixed(2);
 
-                // Send email to tech for the newly auto-generated Step 2 task (non-blocking)
-                if (prod.assignee) {
-                  const [techRows] = await db.query('SELECT id, username, email FROM prixel_admin_users WHERE id = ?', [prod.assignee]);
-                  if (techRows.length > 0 && techRows[0].email) {
-                    const [step2ProdRows] = await db.query('SELECT * FROM prixel_production WHERE id = ?', [step2Id]);
-                    const [orderRows2] = await db.query('SELECT * FROM prixel_orders WHERE order_id = ?', [prod.order_id]);
-                    const order2 = orderRows2.length > 0 ? orderRows2[0] : null;
-                    
-                    const step2RawMaterialInfo = {
-                      inventory_type: 'Slitted',
-                      supplier: raw.supplier,
-                      color_name: raw.color_name,
-                      color_code: raw.color_code
-                    };
-                    
-                    sendProductionAssignedEmail(step2ProdRows[0], order2, techRows[0], step2RawMaterialInfo).catch((err) =>
-                      console.error(`[MAIL] Failed to send Step 2 production assigned email:`, err.message)
-                    );
+                  // Create Step 2 production record
+                  const [step2Result] = await db.query(
+                    `INSERT INTO prixel_production
+                     (production_type, order_id, raw_material_id, target_state, qty, size, channel_length, waste_qty, assignee, status, notes)
+                     VALUES ('Specific Order', ?, ?, 'Ready Channel', ?, ?, ?, ?, ?, 'Pending', 'Auto-created: Cut ready channels from slitted rolls')`,
+                    [oid, invIdToHold, slitsNeeded, `${config.slitted_roll_length} ft`, oChLen, step2Waste, prod.assignee || null]
+                  );
+
+                  const step2Id = step2Result.insertId;
+                  const holdFeet = slitsNeeded * config.slitted_roll_length;
+                  await db.query(
+                    `INSERT INTO prixel_inventory_holds (inventory_id, order_id, production_id, held_pieces, held_quantity, held_feet, status)
+                     VALUES (?, ?, ?, 0, ?, ?, 'held')`,
+                    [invIdToHold, oid, step2Id, slitsNeeded, holdFeet]
+                  );
+
+                  // Send email to tech
+                  if (prod.assignee) {
+                    const [techRows] = await db.query('SELECT id, username, email FROM prixel_admin_users WHERE id = ?', [prod.assignee]);
+                    if (techRows.length > 0 && techRows[0].email) {
+                      const [step2ProdRows] = await db.query('SELECT * FROM prixel_production WHERE id = ?', [step2Id]);
+                      const step2RawMaterialInfo = {
+                        inventory_type: 'Slitted',
+                        supplier: raw.supplier,
+                        color_name: raw.color_name,
+                        color_code: raw.color_code
+                      };
+                      // Fetch customer to pass to email
+                      const [cRows] = await db.query('SELECT company_name, contact_name FROM prixel_customers WHERE id = ?', [orderRows[0].customer_id]);
+                      const orderForEmail = { ...orderRows[0], company_name: cRows[0]?.company_name, contact_name: cRows[0]?.contact_name };
+
+                      sendProductionAssignedEmail(step2ProdRows[0], orderForEmail, techRows[0], step2RawMaterialInfo).catch((err) =>
+                        console.error(`[MAIL] Failed to send Step 2 production assigned email:`, err.message)
+                      );
+                    }
                   }
                 }
               }
@@ -541,22 +573,29 @@ router.patch('/:id/status', async (req, res) => {
       }
 
       // ── Auto-Ready: when all productions for an order are done ──
-      if (prod.production_type === 'Specific Order' && prod.order_id) {
-        const [pendingCheck] = await db.query(
-          `SELECT COUNT(*) as pending_count
-           FROM prixel_production
-           WHERE order_id = ?
-             AND status IN ('Pending', 'In Progress')`,
-          [prod.order_id]
+      if (prod.production_type === 'Specific Order') {
+        const [sharedOrders] = await db.query(
+          `SELECT DISTINCT order_id FROM prixel_inventory_holds WHERE production_id = ? AND order_id IS NOT NULL`,
+          [req.params.id]
         );
-
-        if (pendingCheck[0].pending_count === 0) {
-          // All productions for this order are done → auto-mark Ready
-          await db.query(
-            `UPDATE prixel_orders SET order_status = 'Ready'
-             WHERE order_id = ? AND order_status = 'Awaiting production'`,
-            [prod.order_id]
+        for (const sOrder of sharedOrders) {
+          const oid = sOrder.order_id;
+          const [pendingCheck] = await db.query(
+            `SELECT COUNT(*) as pending_count
+             FROM prixel_production
+             WHERE order_id = ?
+               AND status IN ('Pending', 'In Progress')`,
+            [oid]
           );
+
+          if (pendingCheck[0].pending_count === 0) {
+            // All productions for this order are done → auto-mark Ready
+            await db.query(
+              `UPDATE prixel_orders SET order_status = 'Ready'
+               WHERE order_id = ? AND order_status = 'Awaiting production'`,
+              [oid]
+            );
+          }
         }
       }
     }
@@ -574,6 +613,7 @@ router.patch('/:id/status', async (req, res) => {
 
 // ── POST /api/production/request ─────────────────────────────────
 // Order-linked: creates production records for unfulfilled order pieces
+// first check by order id ready channel is availble if yes then hold or not, after check slitted roll is enough or then check full roll, check slitted if need push in job array after check in full roll if need this push also in job array like that ready the production need array, here loop on this array and insert in production table
 router.post('/request', async (req, res) => {
   const { order_id, assignee, notes } = req.body;
 
@@ -680,8 +720,9 @@ router.post('/request', async (req, res) => {
 
         let newQty = job.qty;
         if (primaryHold.inventory_type !== 'Ready Channel') {
-          const totalFeetHeld = heldItems.reduce((sum, h) => sum + (h.held_feet || 0), 0);
-          rawSize = `${totalFeetHeld} ft`;
+          // Use the actual size of the raw material roll (e.g. 98 ft)
+          // instead of the total held feet, as requested by user.
+          // rawSize is already correctly initialized to primaryHold.size above.
           newQty = job.qty; // Keep whole roll count (Step 1 or whole-slit jobs)
         }
 

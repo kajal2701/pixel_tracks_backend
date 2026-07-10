@@ -128,7 +128,7 @@ async function calculateInventorySatisfaction(color, channel_length, total_piece
       const size = parseFloat(item.size) || 0;
       const rawQty = parseFloat(item.quantity) || 0;
       const heldFeet = parseFloat(item.total_held_feet) || 0;
-      
+
       const totalFeet = size * rawQty;
       const availableFeet = Math.max(0, totalFeet - heldFeet);
       slittedTotalFeet += availableFeet;
@@ -137,7 +137,7 @@ async function calculateInventorySatisfaction(color, channel_length, total_piece
         const piecesPerSlit = Math.floor(size / orderPieceLength);
         const availableRolls = Math.floor(availableFeet / size);
         const heldRolls = Math.floor(heldFeet / size);
-        
+
         slittedPossiblePieces += availableRolls * piecesPerSlit;
         slittedHeldPieces += heldRolls * piecesPerSlit;
       }
@@ -153,27 +153,62 @@ async function calculateInventorySatisfaction(color, channel_length, total_piece
 
   let fullRollTotalFeet = 0;
   let fullRollHeldFeet = 0;
-  inventory
-    .filter((i) => i.inventory_type === 'Full Roll')
-    .forEach((item) => {
-      const size = parseFloat(item.size) || 0;
-      const rawQty = parseFloat(item.quantity) || 0;
-      const heldFeet = parseFloat(item.total_held_feet) || 0;
-      const totalFeet = size * rawQty;
-      fullRollTotalFeet += Math.max(0, totalFeet - heldFeet);
-      fullRollHeldFeet += heldFeet;
-    });
 
-  // Calculate how many full rolls are actually available (as whole rolls)
-  const fullRollsAvailable = Math.floor(fullRollTotalFeet / config.full_roll_length);
-  const fullRollPossiblePieces = fullRollsAvailable * tracksPerFullRoll;
-  const fullRollHeldPieces = Math.floor(fullRollHeldFeet / config.full_roll_length) * tracksPerFullRoll;
+  const fullRollItems = inventory.filter((i) => i.inventory_type === 'Full Roll');
+  fullRollItems.forEach((item) => {
+    const size = parseFloat(item.size) || 0;
+    const rawQty = parseFloat(item.quantity) || 0;
+    const heldFeet = parseFloat(item.total_held_feet) || 0;
+    const totalFeet = size * rawQty;
+    fullRollTotalFeet += Math.max(0, totalFeet - heldFeet);
+    fullRollHeldFeet += heldFeet;
+  });
+
+  // ── Proportional availability: at least 1 physical roll must exist ──
+  // An order reserves only the feet it actually needs, not an entire roll.
+  const physicalRollsExist = fullRollItems.some((i) => (parseFloat(i.quantity) || 0) >= 1);
+  const fullRollPossiblePieces = physicalRollsExist && fullRollTotalFeet > 0
+    ? Math.round((fullRollTotalFeet * tracksPerFullRoll) / config.full_roll_length)
+    : 0;
+  const fullRollHeldPieces = Math.round((fullRollHeldFeet * tracksPerFullRoll) / config.full_roll_length);
   const fullRollUsed = Math.min(remainingQty, fullRollPossiblePieces);
+
+  // ── Detect Active Step 1 Productions for Shared Full Roll Piggybacking ──
+
+  // for check full roll capacity, first here we get the full roll invnetory for inventory table then check in production these inventory has production or not if yes how many left after satisfy the another order, and leftover is satisfying current order or not
+  let activeStep1TotalFeet = 0;
+  if (fullRollItems.length > 0) {
+    const fullRollIds = fullRollItems.map(i => i.id);
+    const [activeProds] = await db.query(
+      `SELECT raw_material_id FROM prixel_production 
+       WHERE target_state = 'Slitted' 
+         AND status IN ('Pending', 'In Progress') 
+         AND raw_material_id IN (?)`,
+      [fullRollIds]
+    );
+    const activeRawIds = new Set(activeProds.map(p => p.raw_material_id));
+
+    fullRollItems.forEach((item) => {
+      if (activeRawIds.has(item.id)) {
+        const size = parseFloat(item.size) || 0;
+        const rawQty = parseFloat(item.quantity) || 0;
+        const heldFeet = parseFloat(item.total_held_feet) || 0;
+        const totalFeet = size * rawQty;
+        activeStep1TotalFeet += Math.max(0, totalFeet - heldFeet);
+      }
+    });
+  }
+  // activeStep1PossiblePieces left over from active prodcution for other order
+  const activeStep1PossiblePieces = Math.round((activeStep1TotalFeet * tracksPerFullRoll) / config.full_roll_length);
+  // Only piggyback if the active production can fully satisfy the remaining pieces. Otherwise, request new production.
+  const activeStep1Used = activeStep1PossiblePieces >= remainingQty ? remainingQty : 0;
+
   remainingQty -= fullRollUsed;
 
   const result = {
     isFullySatisfied: remainingQty === 0,
     isReadySatisfied: readyAvailable >= total_pieces,
+    skipStep1Production: activeStep1Used > 0,
     error: null,
     orderQty: total_pieces,
     parsedColor: parsed,
@@ -190,9 +225,9 @@ async function calculateInventorySatisfaction(color, channel_length, total_piece
     fullRollTotalFeet: parseFloat(fullRollTotalFeet.toFixed(2)),
     fullRollPossiblePieces,
     fullRollHeldPieces,
+    activeStep1Used,
     totalSatisfied: readyUsed + slittedUsed + fullRollUsed,
     shortage: remainingQty,
-    // Include supplier config so callers can use it for production planning
     supplierConfig: config,
     tracksPerSlit,
     tracksPerFullRoll,
@@ -260,17 +295,19 @@ async function holdOrderInventory(order_id, color, channel_length, needs, produc
     if (remainSlits > 0) throw new Error('Not enough Slitted inventory to hold.');
   }
 
-  // 3. Hold Full Roll (by whole rolls, accounting for two-step process)
+  // 3. Hold Full Roll — PROPORTIONAL feet only
+  // Each order reserves only the feet proportional to its piece count.
+  // Physical roll is NOT locked; multiple orders share the same roll.
   let remainFullRollPieces = needs.fullRollPieces || 0;
   if (remainFullRollPieces > 0) {
     const config = await getSupplierConfig(parsed.supplier);
     const tracksPerSlit = Math.floor(config.slitted_roll_length / orderPieceLength);
     const tracksPerFullRoll = tracksPerSlit * config.slits_per_roll;
 
-    // Calculate how many full rolls we need to produce this many pieces
-    const fullRollsNeeded = Math.ceil(remainFullRollPieces / tracksPerFullRoll);
-    const feetNeeded = fullRollsNeeded * config.full_roll_length;
-    let remainFeet = feetNeeded;
+    // Proportional feet = pieces × (full_roll_length / tracksPerFullRoll)
+    // e.g., 35 pieces × (98 ft / 84 tracks) = 40.8333 ft
+    const proportionalFeetPerPiece = config.full_roll_length / (tracksPerFullRoll || 1);
+    let remainFeet = parseFloat((remainFullRollPieces * proportionalFeetPerPiece).toFixed(4));
 
     const fullRollItems = inventory.filter(i => i.inventory_type === 'Full Roll');
     for (const item of fullRollItems) {
@@ -283,14 +320,13 @@ async function holdOrderInventory(order_id, color, channel_length, needs, produc
       const availableFeet = Math.max(0, totalFeet - heldFeet);
 
       if (availableFeet > 0) {
-        const takeFeet = Math.min(availableFeet, remainFeet);
-        const qtyToHold = Math.ceil(takeFeet / size);
-        const actualFeetTaken = qtyToHold * size; // Hold whole rolls
-        holdsToInsert.push([item.id, order_id, production_id, 0, qtyToHold, actualFeetTaken, 'held']);
-        remainFeet -= actualFeetTaken;
+        const takeFeet = parseFloat(Math.min(availableFeet, remainFeet).toFixed(4));
+        // held_quantity = 0 (no whole-roll lock), held_feet = proportional
+        holdsToInsert.push([item.id, order_id, production_id, 0, 0, takeFeet, 'held']);
+        remainFeet = parseFloat((remainFeet - takeFeet).toFixed(4));
       }
     }
-    if (remainFeet > 0) throw new Error('Not enough Full Roll inventory to hold.');
+    if (remainFeet > 0.01) throw new Error('Not enough Full Roll inventory to hold.');
   }
 
   if (holdsToInsert.length > 0) {
@@ -349,13 +385,35 @@ async function getHoldsByColor(color, channel_length) {
         (i.inventory_type = 'Ready Channel' AND ABS(CAST(i.length AS DECIMAL(10,2)) - CAST(? AS DECIMAL(10,2))) < 0.02)
       )
   `;
-  
+
   const [rows] = await db.query(query, [
-    parsed.supplier || '', parsed.supplier || '', 
-    parsed.colorCode || '', parsed.colorCode || '', 
+    parsed.supplier || '', parsed.supplier || '',
+    parsed.colorCode || '', parsed.colorCode || '',
     orderPieceLength
   ]);
   return rows;
+}
+
+// ── Helper: get linked products for a given color string ──────────
+async function getLinkedProducts(colorStr) {
+  const parsed = parseOrderColor(colorStr);
+  if (!parsed.supplier || !parsed.colorCode) return [];
+
+  // Find the original product to get its link_group_id
+  const [orig] = await db.query(
+    'SELECT link_group_id FROM prixel_products WHERE LOWER(TRIM(manufacturer)) = LOWER(TRIM(?)) AND LOWER(TRIM(color_code)) = LOWER(TRIM(?))',
+    [parsed.supplier, parsed.colorCode]
+  );
+
+  if (orig.length === 0 || !orig[0].link_group_id) return [];
+
+  // Return all other products in that group
+  const [linked] = await db.query(
+    'SELECT * FROM prixel_products WHERE link_group_id = ? AND NOT (LOWER(TRIM(manufacturer)) = LOWER(TRIM(?)) AND LOWER(TRIM(color_code)) = LOWER(TRIM(?)))',
+    [orig[0].link_group_id, parsed.supplier, parsed.colorCode]
+  );
+
+  return linked;
 }
 
 export default {
@@ -363,4 +421,6 @@ export default {
   holdOrderInventory,
   getSupplierConfig,
   getHoldsByColor,
+  parseOrderColor,
+  getLinkedProducts,
 };

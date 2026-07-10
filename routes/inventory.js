@@ -138,6 +138,7 @@ router.get('/', async (req, res) => {
 });
 
 // ── GET /api/inventory/holds ────────────────────────────────────
+// use this api for show hold inventory in confirm pop up eye icon 
 router.get('/holds', async (req, res) => {
   try {
     const { color, channel_length } = req.query;
@@ -153,6 +154,7 @@ router.get('/holds', async (req, res) => {
 
 // ── GET /api/inventory/:id/stock-breakdown ──────────────────────
 // Returns per-location stock with dispatched-hold info for a Ready Channel item
+// inventory module to get locatin wise stock when click on eye for ready channel only
 router.get('/:id/stock-breakdown', async (req, res) => {
   try {
     const [invRows] = await db.query('SELECT * FROM prixel_inventory WHERE id = ?', [req.params.id]);
@@ -217,6 +219,120 @@ router.get('/:id/stock-breakdown', async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch stock breakdown', error: err.message });
   }
 });
+
+// ── POST /api/inventory/convert-color ───────────────────────────
+router.post('/convert-color', async (req, res) => {
+  const { from_id, to_color_name, to_color_code, quantity } = req.body;
+
+  if (!from_id || !to_color_name || !to_color_code || !quantity) {
+    return res.status(400).json({ message: 'Missing required fields (from_id, to_color_name, to_color_code, quantity)' });
+  }
+
+  const qtyToTransfer = parseInt(quantity, 10);
+  if (qtyToTransfer <= 0) {
+    return res.status(400).json({ message: 'Quantity must be a positive integer' });
+  }
+
+  let connection;
+  try {
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    // 1. Fetch the source inventory item with its held quantity
+    const [sourceRows] = await connection.query(`
+      SELECT i.*, 
+        COALESCE(SUM(CASE WHEN h.status = 'held' THEN h.held_quantity ELSE 0 END), 0) as held_quantity
+      FROM prixel_inventory i
+      LEFT JOIN prixel_inventory_holds h ON i.id = h.inventory_id
+      WHERE i.id = ?
+      GROUP BY i.id
+      FOR UPDATE
+    `, [from_id]);
+    if (sourceRows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ message: 'Source inventory item not found' });
+    }
+    const sourceItem = sourceRows[0];
+
+    // Ensure it's Full Roll or Slitted
+    if (!isRollOrSlitted(sourceItem.inventory_type)) {
+      await connection.rollback();
+      return res.status(400).json({ message: 'Color conversion is only supported for Full Roll or Slitted inventory' });
+    }
+
+    // Ensure sufficient available quantity
+    const totalQty = parseInt(sourceItem.quantity, 10) || 0;
+    const heldQty = parseInt(sourceItem.held_quantity, 10) || 0;
+    const availableQty = Math.max(0, totalQty - heldQty);
+    if (qtyToTransfer > availableQty) {
+      await connection.rollback();
+      return res.status(400).json({ message: `Insufficient quantity. Only ${availableQty} available.` });
+    }
+
+    // 2. Deduct quantity from source
+    await connection.query('UPDATE prixel_inventory SET quantity = quantity - ? WHERE id = ?', [qtyToTransfer, from_id]);
+
+    // 3. Check if target inventory exists
+    const [targetRows] = await connection.query(
+      `SELECT * FROM prixel_inventory 
+       WHERE LOWER(TRIM(supplier)) = LOWER(TRIM(?)) 
+         AND LOWER(TRIM(color_name)) = LOWER(TRIM(?))
+         AND LOWER(TRIM(color_code)) = LOWER(TRIM(?))
+         AND inventory_type = ?
+         AND CAST(size AS DECIMAL(10,2)) = CAST(? AS DECIMAL(10,2))
+       LIMIT 1 FOR UPDATE`,
+      [sourceItem.supplier, to_color_name, to_color_code, sourceItem.inventory_type, sourceItem.size || 0]
+    );
+
+    let targetItem;
+
+    if (targetRows.length > 0) {
+      // 4a. Update existing target
+      targetItem = targetRows[0];
+      await connection.query('UPDATE prixel_inventory SET quantity = quantity + ? WHERE id = ?', [qtyToTransfer, targetItem.id]);
+    } else {
+      // 4b. Create new target inventory
+      const insertSql = `
+        INSERT INTO prixel_inventory 
+        (supplier, color_name, color_code, price, state, channel_length, 
+         inventory_type, size, quantity, possible_feet, 
+         hole_distance, pieces, length, location, location_stock)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+      const values = [
+        sourceItem.supplier,
+        to_color_name,
+        to_color_code,
+        sourceItem.price,
+        sourceItem.state || 'available',
+        sourceItem.channel_length,
+        sourceItem.inventory_type,
+        sourceItem.size,
+        qtyToTransfer,
+        sourceItem.possible_feet,
+        sourceItem.hole_distance,
+        sourceItem.pieces,
+        sourceItem.length,
+        sourceItem.location,
+        sourceItem.location_stock
+      ];
+      
+      const [insertResult] = await connection.query(insertSql, values);
+      const [newRows] = await connection.query('SELECT * FROM prixel_inventory WHERE id = ?', [insertResult.insertId]);
+      targetItem = newRows[0];
+    }
+
+    await connection.commit();
+    res.json({ message: 'Color conversion successful', data: targetItem });
+  } catch (err) {
+    if (connection) await connection.rollback();
+    console.error('Error during color conversion:', err);
+    res.status(500).json({ message: 'Failed to convert color', error: err.message });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 
 // ── POST /api/inventory/:id/transfer ────────────────────────────
 // Transfer Ready Channel pieces from one location to another

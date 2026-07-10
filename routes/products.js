@@ -8,20 +8,25 @@ const router = Router();
 router.get('/', async (req, res) => {
   const { search, color } = req.query;
 
-  let sql = 'SELECT * FROM prixel_products WHERE 1=1';
+  let sql = `
+    SELECT p.*, g.group_name 
+    FROM prixel_products p 
+    LEFT JOIN prixel_product_link_groups g ON p.link_group_id = g.id 
+    WHERE 1=1
+  `;
   const params = [];
 
   if (color) {
-    sql += ' AND color = ?';
+    sql += ' AND p.color = ?';
     params.push(color);
   }
   if (search) {
-    sql += ' AND (manufacturer LIKE ? OR color LIKE ? OR color_code LIKE ?)';
+    sql += ' AND (p.manufacturer LIKE ? OR p.color LIKE ? OR p.color_code LIKE ?)';
     const like = `%${search}%`;
     params.push(like, like, like);
   }
 
-  sql += ' ORDER BY created_at DESC';
+  sql += ' ORDER BY p.created_at DESC';
 
   try {
     const [results] = await db.query(sql, params);
@@ -31,10 +36,96 @@ router.get('/', async (req, res) => {
   }
 });
 
+// ── GET /api/products/link-groups ────────────────────────────────
+router.get('/link-groups', async (req, res) => {
+  try {
+    const [groups] = await db.query('SELECT * FROM prixel_product_link_groups ORDER BY created_at DESC');
+    const [products] = await db.query('SELECT id, manufacturer, color, color_code, link_group_id FROM prixel_products WHERE link_group_id IS NOT NULL');
+    
+    // Group products by link_group_id
+    const productsByGroup = products.reduce((acc, p) => {
+      if (!acc[p.link_group_id]) acc[p.link_group_id] = [];
+      acc[p.link_group_id].push(p);
+      return acc;
+    }, {});
+
+    const result = groups.map(g => ({
+      ...g,
+      products: productsByGroup[g.id] || []
+    }));
+
+    res.json({ data: result });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch link groups', error: err.message });
+  }
+});
+
+// ── POST /api/products/link-groups ───────────────────────────────
+router.post('/link-groups', async (req, res) => {
+  const { group_name, product_ids } = req.body;
+  if (!product_ids || !Array.isArray(product_ids) || product_ids.length < 2) {
+    return res.status(400).json({ message: 'At least two product IDs are required.' });
+  }
+
+  try {
+    const [result] = await db.query('INSERT INTO prixel_product_link_groups (group_name) VALUES (?)', [group_name || null]);
+    const groupId = result.insertId;
+
+    await db.query('UPDATE prixel_products SET link_group_id = ? WHERE id IN (?)', [groupId, product_ids]);
+    
+    res.status(201).json({ message: 'Group created successfully', data: { id: groupId, group_name } });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to create link group', error: err.message });
+  }
+});
+
+// ── PUT /api/products/link-groups/:id ────────────────────────────
+router.put('/link-groups/:id', async (req, res) => {
+  const { group_name, product_ids } = req.body;
+  const groupId = req.params.id;
+
+  try {
+    if (group_name !== undefined) {
+      await db.query('UPDATE prixel_product_link_groups SET group_name = ? WHERE id = ?', [group_name || null, groupId]);
+    }
+    
+    if (product_ids && Array.isArray(product_ids)) {
+      // Clear old products
+      await db.query('UPDATE prixel_products SET link_group_id = NULL WHERE link_group_id = ?', [groupId]);
+      // Set new products
+      if (product_ids.length > 0) {
+        await db.query('UPDATE prixel_products SET link_group_id = ? WHERE id IN (?)', [groupId, product_ids]);
+      }
+    }
+    
+    res.json({ message: 'Group updated successfully' });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to update link group', error: err.message });
+  }
+});
+
+// ── DELETE /api/products/link-groups/:id ─────────────────────────
+router.delete('/link-groups/:id', async (req, res) => {
+  const groupId = req.params.id;
+  try {
+    await db.query('UPDATE prixel_products SET link_group_id = NULL WHERE link_group_id = ?', [groupId]);
+    await db.query('DELETE FROM prixel_product_link_groups WHERE id = ?', [groupId]);
+    res.json({ message: 'Group deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to delete link group', error: err.message });
+  }
+});
+
+
 // ── GET /api/products/:id ────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT * FROM prixel_products WHERE id = ?', [req.params.id]);
+    const [rows] = await db.query(`
+      SELECT p.*, g.group_name 
+      FROM prixel_products p 
+      LEFT JOIN prixel_product_link_groups g ON p.link_group_id = g.id 
+      WHERE p.id = ?
+    `, [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ message: 'Product not found' });
     res.json({ data: rows[0] });
   } catch (err) {
