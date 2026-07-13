@@ -23,10 +23,12 @@ router.get('/', async (req, res) => {
         i.supplier        AS raw_material_supplier,
         i.size            AS raw_material_size_available,
         i.quantity         AS raw_material_qty_available,
-        u.username        AS assignee_name
+        u.username        AS assignee_name,
+        o.customer_tag
       FROM prixel_production p
       LEFT JOIN prixel_inventory i ON i.id = p.raw_material_id
       LEFT JOIN prixel_admin_users u ON u.id = p.assignee
+      LEFT JOIN prixel_orders o ON o.order_id = p.order_id
       ORDER BY p.created_at DESC
     `);
     res.json({ data: rows });
