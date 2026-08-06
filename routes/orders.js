@@ -376,7 +376,6 @@ router.post('/:id/confirm', async (req, res) => {
 
     // Calculate how much inventory is immediately satisfied by Ready Channel
     const data = await inventoryService.calculateInventorySatisfaction(color, channel_length, total_pieces);
-    console.log(data, "data")
 
     if (data.readyUsed > 0) {
       // Hold exactly the readyUsed pieces for this order. No production_id.

@@ -79,7 +79,7 @@ const sendOrderPlacedNotification = async (order, recipient = 'customer') => {
   }
 
   return sendMail({
-    to: `${order.email},pixeltracksandtechnology@gmail.com`,
+    to: `${order.email},info@pixeltracks.ca`,
     bcc: 'hamam516@gmail.com',
     subject: `Order #${order.order_id} — Pixel Tracks`,
     headers: orderThreadHeaders(order.order_id, 'placed'),
@@ -159,7 +159,6 @@ const sendOrderConfirmedNotification = async (order, recipient = 'customer') => 
     const emails = users.map((u) => u.email).filter((e) => e);
     if (emails.length === 0) return;
 
-    console.log(emails, "emails")
 
     const subjectTag = recipient === 'operations' ? 'Operations Team' : 'Sales Team';
     return sendMail({
@@ -170,7 +169,7 @@ const sendOrderConfirmedNotification = async (order, recipient = 'customer') => 
   }
 
   return sendMail({
-    to: `${order.email},pixeltracksandtechnology@gmail.com`,
+    to: `${order.email},info@pixeltracks.ca`,
     bcc: 'hamam516@gmail.com',
     subject: `Order #${order.order_id} — Pixel Tracks`,
     headers: orderThreadHeaders(order.order_id, 'confirmed'),
@@ -257,7 +256,7 @@ const sendOrderCancelledNotification = async (order, recipient = 'customer') => 
   }
 
   return sendMail({
-    to: `${order.email},pixeltracksandtechnology@gmail.com`,
+    to: `${order.email},info@pixeltracks.ca`,
     bcc: 'hamam516@gmail.com',
     subject: `Order #${order.order_id} — Pixel Tracks`,
     headers: orderThreadHeaders(order.order_id, 'cancelled'),
@@ -362,7 +361,7 @@ const sendOrderDispatchedNotification = async (order, recipient = 'customer') =>
   }
 
   return sendMail({
-    to: `${order.email},pixeltracksandtechnology@gmail.com`,
+    to: `${order.email},info@pixeltracks.ca`,
     bcc: 'hamam516@gmail.com',
     subject: `Order #${order.order_id} — Pixel Tracks`,
     headers: orderThreadHeaders(order.order_id, 'dispatched'),
@@ -446,7 +445,7 @@ const sendOrderPickedUpNotification = async (order, recipient = 'sales') => {
 
   const subjectTag = recipient === 'operations' ? 'Operations Team' : 'Sales Team';
   const mailOptions = {
-    to: recipient === 'sales' ? `${emails.join(",")},pixeltracksandtechnology@gmail.com` : emails.join(","),
+    to: recipient === 'sales' ? `${emails.join(",")},info@pixeltracks.ca` : emails.join(","),
     subject: isPickup
       ? `Order Picked Up (${subjectTag}) — ${order.order_id}`
       : `Order Delivered (${subjectTag}) — ${order.order_id}`,
@@ -519,7 +518,7 @@ export const sendOrderCompletedEmail = async (order) => {
   });
 
   return sendMail({
-    to: `${order.email},pixeltracksandtechnology@gmail.com`,
+    to: `${order.email},info@pixeltracks.ca`,
     bcc: 'hamam516@gmail.com',
     subject: `Order #${order.order_id} — Pixel Tracks`,
     headers: orderThreadHeaders(order.order_id, 'completed'),
@@ -590,7 +589,7 @@ const sendInvoiceNotification = async (invoice, customerInfo, recipient = 'custo
   }
 
   return sendMail({
-    to: `${customerInfo.email},pixeltracksandtechnology@gmail.com`,
+    to: `${customerInfo.email},info@pixeltracks.ca`,
     bcc: 'hamam516@gmail.com',
     subject: `Invoice ${invoice.invoice_number} — Pixel Tracks`,
     html,
@@ -661,7 +660,7 @@ export const sendPaymentSubmittedSalesEmail = async (invoice) => {
     });
 
     return sendMail({
-      to: `${emails.join(",")},pixeltracksandtechnology@gmail.com`,
+      to: `${emails.join(",")},info@pixeltracks.ca`,
       bcc: 'hamam516@gmail.com',
       subject: `Payment Submitted — ${invoice.invoice_number}`,
       html,
@@ -786,7 +785,7 @@ export const sendProductionAssignedEmail = async (production, order, techInfo, r
   });
 
   return sendMail({
-    to: `${techInfo.email},pixeltracksandtechnology@gmail.com`,
+    to: `${techInfo.email},info@pixeltracks.ca`,
     bcc: 'hamam516@gmail.com',
     subject: `Production Assigned — ${production.order_id || 'General Inventory'}`,
     html,
@@ -881,7 +880,7 @@ export const sendOrderModifiedEmail = async (order) => {
   });
 
   return sendMail({
-    to: `${order.email},pixeltracksandtechnology@gmail.com`,
+    to: `${order.email},info@pixeltracks.ca`,
     bcc: 'hamam516@gmail.com',
     subject: `Order #${order.order_id} — Pixel Tracks`,
     headers: orderThreadHeaders(order.order_id, 'modified'),
@@ -961,7 +960,7 @@ export const sendInventoryTransferEmail = async (order, techInfo, sourceLocs, de
   });
 
   return sendMail({
-    to: `${techInfo.email},pixeltracksandtechnology@gmail.com`,
+    to: `${techInfo.email},info@pixeltracks.ca`,
     bcc: 'hamam516@gmail.com',
     subject: `Inventory Transfer Task Assigned — ${order.order_id}`,
     html,
@@ -999,7 +998,7 @@ export const sendCustomerOrderModificationEmail = async (order) => {
   });
 
   return sendMail({
-    to: `${order.email},pixeltracksandtechnology@gmail.com`,
+    to: `${order.email},info@pixeltracks.ca`,
     bcc: 'hamam516@gmail.com',
     subject: `Order #${order.order_id} — Pixel Tracks`,
     headers: orderThreadHeaders(order.order_id, 'customer-modified'),
