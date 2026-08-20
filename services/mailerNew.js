@@ -1,24 +1,24 @@
 import nodemailer from "nodemailer";
 
-// ─── SMTP Transporter (smtp.gmail.com:587 / STARTTLS) ─────────────────────────
+// ─── SMTP Transporter (Brevo) ─────────────────────────
 const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST || "smtp.gmail.com",
+    host: process.env.SMTP_HOST,
     port: parseInt(process.env.SMTP_PORT || "587"),
-    secure: false,          // false = STARTTLS on port 587
-    requireTLS: true,       // enforce STARTTLS upgrade
+    secure: false,
+    requireTLS: true,
     auth: {
-        user: process.env.SMTP_USER || "quote@canstarlight.ca",
-        pass: process.env.SMTP_PASS || "lpyyzoryawtewpph",
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
     },
     tls: {
-        rejectUnauthorized: false, // allows self-signed certs if needed
+        rejectUnauthorized: process.env.NODE_ENV === "production" ? true : false,
     },
 });
 
 // ─── sendMail — same signature as before ──────────────────────────────────────
 export const sendMail2 = async ({ to, cc, subject, html, from, replyTo }) => {
     const mailOptions = {
-        from: from || `"Canstar Light" <quote@canstarlight.ca>`,
+        from: from || `"Pixel Tracks" <kajalgohil2112@gmail.com>`, // must match verified sender
         to,
         subject,
         html,
