@@ -13,7 +13,7 @@ import productRoutes from './routes/products.js';
 import productionRoutes from './routes/production.js';
 import invoiceRoutes from './routes/invoices.js';
 import { sendMail, verifyMailer } from './services/mailer.js';
-import { sendMail2, verifyMailer2 } from './services/mailerNew.js';
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -51,22 +51,6 @@ app.get('/test-email', async (req, res) => {
   try {
     await verifyMailer();
     const info = await sendMail({
-      to,
-      subject: 'Pixel Tracks — SMTP Test',
-      html: '<p>If you receive this, SMTP is working correctly.</p>',
-    });
-    return res.json({ success: true, messageId: info.messageId });
-  } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.get('/test-email2', async (req, res) => {
-  const to = req.query.to;
-  if (!to) return res.status(400).json({ success: false, message: 'Provide ?to=email' });
-  try {
-    await verifyMailer2();
-    const info = await sendMail2({
       to,
       subject: 'Pixel Tracks — SMTP Test',
       html: '<p>If you receive this, SMTP is working correctly.</p>',
