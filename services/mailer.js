@@ -1,47 +1,81 @@
-import nodemailer from "nodemailer";
+import axios from "axios";
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || "smtp-relay.brevo.com",
-  port: parseInt(process.env.SMTP_PORT || "587", 10),
-  secure: false, // port 587 uses STARTTLS, not SSL
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-  tls: {
-    rejectUnauthorized: false,
-  },
-});
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
+const FROM_EMAIL = process.env.SMTP_FROM || "kajalgohil2112@gmail.com";
+const FROM_NAME = process.env.SMTP_FROM_NAME || "Pixel Tracks";
 
 /**
- * Send an email via Brevo SMTP (nodemailer).
+ * Send an email via Brevo HTTP API (bypasses SMTP port blocking on Render).
  * Signature matches what emailService.js already uses.
  */
 export const sendMail = async ({ to, cc, bcc, subject, html, headers = {} }) => {
-  const fromName = process.env.SMTP_FROM_NAME || "Pixel Tracks";
-  const fromEmail = process.env.SMTP_FROM || "kajalgohil2112@gmail.com";
+  // Parse "to" — can be comma-separated string
+  const toList = String(to)
+    .split(",")
+    .map((e) => e.trim())
+    .filter((e) => e)
+    .map((email) => ({ email }));
 
-  const mailOptions = {
-    from: `${fromName} <${fromEmail}>`,
-    to,
+  const payload = {
+    sender: { name: FROM_NAME, email: FROM_EMAIL },
+    to: toList,
     subject,
-    html,
+    htmlContent: html,
   };
 
-  if (cc) mailOptions.cc = cc;
-  if (bcc) mailOptions.bcc = bcc;
-  if (Object.keys(headers).length) mailOptions.headers = headers;
+  if (cc) {
+    payload.cc = String(cc)
+      .split(",")
+      .map((e) => e.trim())
+      .filter((e) => e)
+      .map((email) => ({ email }));
+  }
 
-  const info = await transporter.sendMail(mailOptions);
-  console.log(`[MAIL] Sent to=${to} subject="${subject}" messageId=${info.messageId}`);
-  return info;
+  if (bcc) {
+    payload.bcc = String(bcc)
+      .split(",")
+      .map((e) => e.trim())
+      .filter((e) => e)
+      .map((email) => ({ email }));
+  }
+
+  if (Object.keys(headers).length) {
+    payload.headers = headers;
+  }
+
+  const response = await axios.post(
+    "https://api.brevo.com/v3/smtp/email",
+    payload,
+    {
+      headers: {
+        "api-key": BREVO_API_KEY,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+
+  console.log(`[MAIL] Sent to=${to} subject="${subject}" messageId=${response.data?.messageId}`);
+  return response.data;
 };
 
 /**
- * Verify SMTP connection on startup.
+ * Verify Brevo API key is configured.
  */
 export const verifyMailer = async () => {
-  await transporter.verify();
-  console.log("[MAIL] Brevo SMTP ready ✅");
+  if (!BREVO_API_KEY) {
+    throw new Error("SMTP_PASS (Brevo API key) is not set");
+  }
+
+  // Quick check — get account info to verify key works
+  try {
+    await axios.get("https://api.brevo.com/v3/account", {
+      headers: { "api-key": BREVO_API_KEY },
+    });
+    console.log("[MAIL] Brevo API ready ✅");
+  } catch (err) {
+    console.error("[MAIL] Brevo API key verification failed:", err.message);
+    throw err;
+  }
+
   return true;
 };
