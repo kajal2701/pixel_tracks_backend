@@ -18,6 +18,7 @@ import {
   sendOrderCompletedEmail,
   sendInventoryTransferEmail,
   sendCustomerOrderModificationEmail,
+  sendAdminOverrideModificationEmail,
 } from '../services/emailService.js';
 
 const router = Router();
@@ -915,6 +916,76 @@ router.post('/:id/modification/resolve', async (req, res) => {
     }
   } catch (err) {
     res.status(500).json({ message: 'Failed to resolve modification', error: err.message });
+  }
+});
+
+// ── POST /api/orders/:id/modification/override ────────────────────────────
+// Admin overrides pending modification — applies changes immediately without customer approval
+router.post('/:id/modification/override', async (req, res) => {
+  try {
+    const [orders] = await db.query(
+      'SELECT modification_notes FROM prixel_orders WHERE id = ?',
+      [req.params.id]
+    );
+    if (orders.length === 0) return res.status(404).json({ message: 'Order not found' });
+
+    let pendingChanges = null;
+    try {
+      if (orders[0].modification_notes) {
+        pendingChanges = JSON.parse(orders[0].modification_notes);
+      }
+    } catch (e) {
+      return res.status(400).json({ message: 'No pending modifications found.' });
+    }
+
+    if (!pendingChanges || pendingChanges.status !== 'pending') {
+      return res.status(400).json({ message: 'No pending modification to override.' });
+    }
+
+    const { pickup_date, pickup_location } = pendingChanges;
+
+    // Set status to 'approved' — consistent with customer approval flow
+    pendingChanges.status = 'approved';
+
+    const fieldsToUpdate = [];
+    const values = [];
+
+    fieldsToUpdate.push('pickup_date = ?');
+    values.push(pickup_date || null);
+
+    if (pickup_location) {
+      fieldsToUpdate.push('pickup_location = ?');
+      values.push(pickup_location);
+    }
+
+    fieldsToUpdate.push('modification_notes = ?');
+    values.push(JSON.stringify(pendingChanges));
+    values.push(req.params.id);
+
+    const [result] = await db.query(
+      `UPDATE prixel_orders SET ${fieldsToUpdate.join(', ')} WHERE id = ?`,
+      values
+    );
+
+    if (result.affectedRows === 0) return res.status(404).json({ message: 'Order not found' });
+
+    const [rows] = await db.query(
+      `SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date,
+              c.company_name, c.contact_name, c.email
+       FROM prixel_orders o
+       LEFT JOIN prixel_customers c ON c.id = o.customer_id
+       WHERE o.id = ?`,
+      [req.params.id]
+    );
+
+    res.json({ message: 'Modification overridden and approved successfully', data: rows[0] });
+
+    // Notify customer — info only, no approve/cancel links
+    sendAdminOverrideModificationEmail(rows[0]).catch(err => {
+      console.error(`[MAIL] Override email failed for ${rows[0]?.order_id}:`, err.message);
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to override modification', error: err.message });
   }
 });
 

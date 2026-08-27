@@ -1005,3 +1005,41 @@ export const sendCustomerOrderModificationEmail = async (order) => {
     html,
   });
 };
+
+/**
+ * Send order update notification to customer when admin overrides the modification approval.
+ * Notification-only — no approve/cancel links.
+ */
+export const sendAdminOverrideModificationEmail = async (order) => {
+  const backendUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 8000}`;
+
+  const greeting = `Hello <strong>${order.contact_name || order.company_name}</strong>,`;
+  const introMessage = `Your order <strong>${order.order_id}</strong> has been updated by our team. Here are the current details:`;
+  const noteHeading = `Order Updated`;
+  const noteBody = `Our admin team has applied the modification to your order. If you have any questions, please feel free to reach out.`;
+
+  const html = renderTemplate("customerOrderModification", {
+    logoUrl: `${backendUrl}/uploads/email/light_logo.png`,
+    greeting,
+    introMessage,
+    noteHeading,
+    noteBody,
+    orderId: order.order_id,
+    channelType: order.channel_type,
+    color: order.color,
+    holeDistance: order.hole_distance,
+    channelLength: order.channel_length,
+    totalLength: order.total_length,
+    totalPieces: order.total_pieces,
+    finalLength: order.final_length,
+    orderStatus: order.order_status,
+    year: new Date().getFullYear().toString(),
+  });
+
+  return sendMail({
+    to: `${order.email}`,
+    subject: `Order #${order.order_id} Updated — Pixel Tracks`,
+    headers: orderThreadHeaders(order.order_id, 'admin-modified'),
+    html,
+  });
+};
