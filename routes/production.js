@@ -24,7 +24,8 @@ router.get('/', async (req, res) => {
         i.size            AS raw_material_size_available,
         i.quantity         AS raw_material_qty_available,
         u.username        AS assignee_name,
-        o.customer_tag
+        o.customer_tag,
+        DATE_FORMAT(o.pickup_date, '%Y-%m-%d') AS pickup_date
       FROM prixel_production p
       LEFT JOIN prixel_inventory i ON i.id = p.raw_material_id
       LEFT JOIN prixel_admin_users u ON u.id = p.assignee

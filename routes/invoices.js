@@ -133,6 +133,81 @@ router.get('/', async (req, res) => {
 
 
 // ═══════════════════════════════════════════════════════════════════
+// GET /api/invoices/customer/:customerId — List invoices for a specific customer
+// (Customer portal: excludes Draft invoices)
+// ═══════════════════════════════════════════════════════════════════
+router.get('/customer/:customerId', async (req, res) => {
+  const { customerId } = req.params;
+
+  try {
+    const [rows] = await db.query(
+      `SELECT i.*, c.company_name, c.contact_name, c.email
+       FROM prixel_invoices i
+       LEFT JOIN prixel_customers c ON c.id = i.customer_id
+       WHERE i.customer_id = ? AND i.status != 'Draft'
+       ORDER BY i.created_at DESC`,
+      [customerId],
+    );
+    res.json({ data: rows });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch customer invoices', error: err.message });
+  }
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// GET /api/invoices/:id/customer/:customerId — Get single invoice
+// with ownership validation (Customer portal)
+// ═══════════════════════════════════════════════════════════════════
+router.get('/:id/customer/:customerId', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT i.*, c.company_name, c.contact_name, c.email, c.phone, c.channel_pricing
+       FROM prixel_invoices i
+       LEFT JOIN prixel_customers c ON c.id = i.customer_id
+       WHERE i.id = ?`,
+      [req.params.id],
+    );
+    if (rows.length === 0) return res.status(404).json({ message: 'Invoice not found' });
+
+    const invoice = rows[0];
+
+    // Ownership check: customer can only view their own invoices
+    if (String(invoice.customer_id) !== String(req.params.customerId)) {
+      return res.status(403).json({ message: 'Access denied. This invoice does not belong to your account.' });
+    }
+
+    // Don't let customers see Draft invoices
+    if (invoice.status === 'Draft') {
+      return res.status(403).json({ message: 'This invoice is not yet available.' });
+    }
+
+    // Fetch the linked orders for extra details
+    const orderIds = invoice.order_ids
+      ? (typeof invoice.order_ids === 'string' ? JSON.parse(invoice.order_ids) : invoice.order_ids)
+      : [];
+
+    let orders = [];
+    if (orderIds.length > 0) {
+      const [orderRows] = await db.query(
+        `SELECT id, order_id, color, channel_type, hole_distance, channel_length,
+                total_length, total_pieces, final_length,
+                delivery_method, pickup_location, delivery_address,
+                customer_notes, additional_notes, created_at
+         FROM prixel_orders WHERE id IN (?)`,
+        [orderIds]
+      );
+      orders = orderRows;
+    }
+
+    res.json({ data: { ...invoice, orders } });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch invoice', error: err.message });
+  }
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
 // GET /api/invoices/:id — Get single invoice by id with full details
 // ═══════════════════════════════════════════════════════════════════
 router.get('/:id', async (req, res) => {
