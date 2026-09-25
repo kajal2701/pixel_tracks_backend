@@ -34,7 +34,8 @@ router.get('/', async (req, res) => {
 
   let sql = `
     SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email,
-           (SELECT production_id FROM prixel_inventory_holds WHERE order_id = o.order_id AND production_id IS NOT NULL LIMIT 1) as linked_production_id
+           (SELECT production_id FROM prixel_inventory_holds WHERE order_id = o.order_id AND production_id IS NOT NULL LIMIT 1) as linked_production_id,
+           (SELECT COUNT(DISTINCT h.order_id) FROM prixel_inventory_holds h JOIN prixel_production p ON p.id = h.production_id WHERE h.production_id = (SELECT production_id FROM prixel_inventory_holds WHERE order_id = o.order_id AND production_id IS NOT NULL LIMIT 1) AND p.target_state = 'Slitted' AND p.status IN ('Pending', 'In Progress')) as linked_order_count
     FROM prixel_orders o
     LEFT JOIN prixel_customers c ON c.id = o.customer_id
     WHERE 1=1

@@ -180,20 +180,26 @@ async function calculateInventorySatisfaction(color, channel_length, total_piece
   if (fullRollItems.length > 0) {
     const fullRollIds = fullRollItems.map(i => i.id);
     const [activeProds] = await db.query(
-      `SELECT raw_material_id FROM prixel_production 
+      `SELECT raw_material_id, qty FROM prixel_production 
        WHERE target_state = 'Slitted' 
          AND status IN ('Pending', 'In Progress') 
          AND raw_material_id IN (?)`,
       [fullRollIds]
     );
-    const activeRawIds = new Set(activeProds.map(p => p.raw_material_id));
+
+    // Group active production quantities by raw_material_id
+    const activeProdQtyMap = {};
+    activeProds.forEach(p => {
+      activeProdQtyMap[p.raw_material_id] = (activeProdQtyMap[p.raw_material_id] || 0) + (parseFloat(p.qty) || 0);
+    });
+
 
     fullRollItems.forEach((item) => {
-      if (activeRawIds.has(item.id)) {
+      if (activeProdQtyMap[item.id]) {
         const size = parseFloat(item.size) || 0;
-        const rawQty = parseFloat(item.quantity) || 0;
+        const activeProdQty = activeProdQtyMap[item.id]; // Use active production qty instead of inventory qty
         const heldFeet = parseFloat(item.total_held_feet) || 0;
-        const totalFeet = size * rawQty;
+        const totalFeet = size * activeProdQty;
         activeStep1TotalFeet += Math.max(0, totalFeet - heldFeet);
       }
     });
