@@ -193,7 +193,7 @@ router.get('/:id/customer/:customerId', async (req, res) => {
         `SELECT id, order_id, color, channel_type, hole_distance, channel_length,
                 total_length, total_pieces, final_length,
                 delivery_method, pickup_location, delivery_address,
-                customer_notes, additional_notes, created_at
+                customer_notes, additional_notes, customer_tag, created_at
          FROM prixel_orders WHERE id IN (?)`,
         [orderIds]
       );
@@ -234,7 +234,7 @@ router.get('/:id', async (req, res) => {
         `SELECT id, order_id, color, channel_type, hole_distance, channel_length,
                 total_length, total_pieces, final_length,
                 delivery_method, pickup_location, delivery_address,
-                customer_notes, additional_notes, created_at
+                customer_notes, additional_notes, customer_tag, created_at
          FROM prixel_orders WHERE id IN (?)`,
         [orderIds]
       );
