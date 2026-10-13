@@ -105,6 +105,7 @@ router.get('/', async (req, res) => {
   let sql = `SELECT i.*,
     COALESCE(SUM(CASE WHEN h.status = 'held' THEN h.held_quantity ELSE 0 END), 0) as held_quantity,
     COALESCE(SUM(CASE WHEN h.status = 'held' THEN h.held_pieces ELSE 0 END), 0) as held_pieces,
+    COALESCE(SUM(CASE WHEN h.status = 'held' THEN h.held_feet ELSE 0 END), 0) as held_feet,
     GREATEST(0, i.quantity - COALESCE(SUM(CASE WHEN h.status = 'held' THEN h.held_quantity ELSE 0 END), 0)) as available_quantity
    FROM prixel_inventory i
    LEFT JOIN prixel_inventory_holds h ON i.id = h.inventory_id`;
