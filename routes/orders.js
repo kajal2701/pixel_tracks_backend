@@ -27,36 +27,34 @@ const router = Router();
 const generateOrderId = (customer_id) =>
   `ORD-${Math.floor(Date.now() / 1000)}-${customer_id}`;
 
-// ── GET /api/orders ─────────────────────────────────────────────
-// Query params: ?status=  ?customer_id=  ?search=  ?quick_access=
-router.get('/', async (req, res) => {
-  const { status, customer_id, search, quick_access } = req.query;
-
-  let sql = `
-    SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email,
-           (SELECT production_id FROM prixel_inventory_holds WHERE order_id = o.order_id AND production_id IS NOT NULL LIMIT 1) as linked_production_id,
-           (SELECT COUNT(DISTINCT h.order_id) FROM prixel_inventory_holds h JOIN prixel_production p ON p.id = h.production_id WHERE h.production_id = (SELECT production_id FROM prixel_inventory_holds WHERE order_id = o.order_id AND production_id IS NOT NULL LIMIT 1) AND p.target_state = 'Slitted' AND p.status IN ('Pending', 'In Progress')) as linked_order_count
-    FROM prixel_orders o
-    LEFT JOIN prixel_customers c ON c.id = o.customer_id
-    WHERE 1=1
-  `;
+// ── Helper: build SQL WHERE clause for order queries ────────────
+const buildOrderFilters = ({ status, customer_id, search, quick_access, exclude_status }) => {
+  let where = ' WHERE 1=1';
   const params = [];
 
   if (status) {
-    sql += ' AND o.order_status = ?';
+    where += ' AND o.order_status = ?';
     params.push(status);
   }
+  if (exclude_status) {
+    const excludeList = exclude_status.split(',').map((s) => s.trim()).filter(Boolean);
+    if (excludeList.length > 0) {
+      where += ` AND o.order_status NOT IN (${excludeList.map(() => '?').join(',')})`;
+      params.push(...excludeList);
+    }
+  }
   if (customer_id) {
-    sql += ' AND o.customer_id = ?';
+    where += ' AND o.customer_id = ?';
     params.push(customer_id);
   }
   if (quick_access) {
-    sql += ' AND o.quick_access = ?';
+    where += ' AND o.quick_access = ?';
     params.push(quick_access);
   }
   if (search) {
-    sql += ` AND (
+    where += ` AND (
       o.order_id        LIKE ? OR
+      o.customer_tag    LIKE ? OR
       o.color           LIKE ? OR
       o.channel_type    LIKE ? OR
       o.order_status    LIKE ? OR
@@ -64,28 +62,125 @@ router.get('/', async (req, res) => {
       c.contact_name    LIKE ?
     )`;
     const like = `%${search}%`;
-    params.push(like, like, like, like, like, like);
+    params.push(like, like, like, like, like, like, like);
   }
 
-  sql += ' ORDER BY o.created_at DESC';
+  return { where, params };
+};
+
+// ── GET /api/orders ─────────────────────────────────────────────
+// Query params: ?status=  ?customer_id=  ?search=  ?quick_access=
+//               ?page=  ?limit=  (server-side pagination)
+//               ?exclude_status=Completed,Cancelled  (exclude specific statuses)
+router.get('/', async (req, res) => {
+  const { status, customer_id, search, quick_access, exclude_status } = req.query;
+  const page = req.query.page ? parseInt(req.query.page, 10) : null;
+  const limit = req.query.limit ? parseInt(req.query.limit, 10) : null;
+  const isPaginated = page !== null && limit !== null && page > 0 && limit > 0;
+
+  // Filter with status included (used for data & total count)
+  const { where: whereClause, params: whereParams } = buildOrderFilters({
+    status, customer_id, search, quick_access, exclude_status,
+  });
 
   try {
-    const [results] = await db.query(sql, params);
+    if (isPaginated) {
+      // ── Paginated mode ──
+      // Summary counts ignore the specific `status` query to provide global totals
+      const { where: summaryWhere, params: summaryParams } = buildOrderFilters({
+        customer_id, search, quick_access, exclude_status,
+      });
 
-    const summary = {
-      total: results.length,
-      pending: results.filter((o) => o.order_status === 'Pending').length,
-      confirmed: results.filter((o) => o.order_status === 'Confirmed').length,
-      awaitingProduction: results.filter((o) => o.order_status === 'Awaiting production').length,
-      awaitingMaterial: results.filter((o) => o.order_status === 'Awaiting material').length,
-      ready: results.filter((o) => o.order_status === 'Ready').length,
-      readyForPickup: results.filter((o) => o.order_status === 'Ready for Pickup/Delivery').length,
-      cancelled: results.filter((o) => o.order_status === 'Cancelled').length,
-    };
+      const summarySql = `
+        SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN o.order_status = 'Pending' THEN 1 ELSE 0 END) as pending,
+          SUM(CASE WHEN o.order_status = 'Confirmed' THEN 1 ELSE 0 END) as confirmed,
+          SUM(CASE WHEN o.order_status = 'Awaiting production' THEN 1 ELSE 0 END) as awaitingProduction,
+          SUM(CASE WHEN o.order_status = 'Awaiting material' THEN 1 ELSE 0 END) as awaitingMaterial,
+          SUM(CASE WHEN o.order_status = 'Ready' THEN 1 ELSE 0 END) as ready,
+          SUM(CASE WHEN o.order_status = 'Ready for Pickup/Delivery' THEN 1 ELSE 0 END) as readyForPickup,
+          SUM(CASE WHEN o.order_status = 'Completed' THEN 1 ELSE 0 END) as completed,
+          SUM(CASE WHEN o.order_status = 'Cancelled' THEN 1 ELSE 0 END) as cancelled
+        FROM prixel_orders o
+        LEFT JOIN prixel_customers c ON c.id = o.customer_id
+        ${summaryWhere}
+      `;
 
+      const countSql = `
+        SELECT COUNT(*) as total
+        FROM prixel_orders o
+        ${search ? 'LEFT JOIN prixel_customers c ON c.id = o.customer_id' : ''}
+        ${whereClause}
+      `;
 
+      const offset = (page - 1) * limit;
+      const dataSql = `
+        SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email,
+               (SELECT production_id FROM prixel_inventory_holds WHERE order_id = o.order_id AND production_id IS NOT NULL LIMIT 1) as linked_production_id,
+               (SELECT COUNT(DISTINCT h.order_id) FROM prixel_inventory_holds h JOIN prixel_production p ON p.id = h.production_id WHERE h.production_id = (SELECT production_id FROM prixel_inventory_holds WHERE order_id = o.order_id AND production_id IS NOT NULL LIMIT 1) AND p.target_state = 'Slitted' AND p.status IN ('Pending', 'In Progress')) as linked_order_count
+        FROM prixel_orders o
+        LEFT JOIN prixel_customers c ON c.id = o.customer_id
+        ${whereClause}
+        ORDER BY o.created_at DESC
+        LIMIT ? OFFSET ?
+      `;
 
-    res.json({ data: results, summary });
+      // Run summary, count, and paginated data queries concurrently
+      const [[summaryRows], [countRows], [results]] = await Promise.all([
+        db.query(summarySql, summaryParams),
+        db.query(countSql, whereParams),
+        db.query(dataSql, [...whereParams, limit, offset]),
+      ]);
+
+      const summaryRow = summaryRows[0] || {};
+      const summary = {
+        total: parseInt(summaryRow.total) || 0,
+        pending: parseInt(summaryRow.pending) || 0,
+        confirmed: parseInt(summaryRow.confirmed) || 0,
+        awaitingProduction: parseInt(summaryRow.awaitingProduction) || 0,
+        awaitingMaterial: parseInt(summaryRow.awaitingMaterial) || 0,
+        ready: parseInt(summaryRow.ready) || 0,
+        readyForPickup: parseInt(summaryRow.readyForPickup) || 0,
+        completed: parseInt(summaryRow.completed) || 0,
+        cancelled: parseInt(summaryRow.cancelled) || 0,
+      };
+
+      const total = parseInt(countRows[0]?.total) || 0;
+      const totalPages = Math.ceil(total / limit);
+
+      res.json({
+        data: results,
+        summary,
+        pagination: { page, limit, total, totalPages },
+      });
+    } else {
+      // ── Non-paginated mode (backward compatible) ──
+      const sql = `
+        SELECT o.*, DATE_FORMAT(o.pickup_date, '%Y-%m-%d') as pickup_date, c.company_name, c.contact_name, c.email,
+               (SELECT production_id FROM prixel_inventory_holds WHERE order_id = o.order_id AND production_id IS NOT NULL LIMIT 1) as linked_production_id,
+               (SELECT COUNT(DISTINCT h.order_id) FROM prixel_inventory_holds h JOIN prixel_production p ON p.id = h.production_id WHERE h.production_id = (SELECT production_id FROM prixel_inventory_holds WHERE order_id = o.order_id AND production_id IS NOT NULL LIMIT 1) AND p.target_state = 'Slitted' AND p.status IN ('Pending', 'In Progress')) as linked_order_count
+        FROM prixel_orders o
+        LEFT JOIN prixel_customers c ON c.id = o.customer_id
+        ${whereClause}
+        ORDER BY o.created_at DESC
+      `;
+      const [results] = await db.query(sql, whereParams);
+
+      const summary = {
+        total: results.length,
+        pending: results.filter((o) => o.order_status === 'Pending').length,
+        confirmed: results.filter((o) => o.order_status === 'Confirmed').length,
+        awaitingProduction: results.filter((o) => o.order_status === 'Awaiting production').length,
+        awaitingMaterial: results.filter((o) => o.order_status === 'Awaiting material').length,
+        ready: results.filter((o) => o.order_status === 'Ready').length,
+        readyForPickup: results.filter((o) => o.order_status === 'Ready for Pickup/Delivery').length,
+        completed: results.filter((o) => o.order_status === 'Completed').length,
+        cancelled: results.filter((o) => o.order_status === 'Cancelled').length,
+      };
+
+      res.json({ data: results, summary });
+    }
   } catch (err) {
     res.status(500).json({ message: 'Failed to fetch orders', error: err.message });
   }
