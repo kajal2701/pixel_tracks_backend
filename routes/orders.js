@@ -59,10 +59,19 @@ const buildOrderFilters = ({ status, customer_id, search, quick_access, exclude_
       o.channel_type    LIKE ? OR
       o.order_status    LIKE ? OR
       c.company_name    LIKE ? OR
-      c.contact_name    LIKE ?
+      c.contact_name    LIKE ? OR
+      DATE_FORMAT(o.pickup_date, '%Y-%m-%d') LIKE ? OR
+      DATE_FORMAT(o.pickup_date, '%d-%m-%Y') LIKE ? OR
+      CAST(o.final_length AS CHAR)           LIKE ? OR
+      EXISTS (
+        SELECT 1 FROM prixel_inventory_holds h
+        WHERE h.order_id = o.order_id
+          AND h.production_id IS NOT NULL
+          AND CAST(h.production_id AS CHAR) LIKE ?
+      )
     )`;
     const like = `%${search}%`;
-    params.push(like, like, like, like, like, like, like);
+    params.push(like, like, like, like, like, like, like, like, like, like, like);
   }
 
   return { where, params };
@@ -73,10 +82,22 @@ const buildOrderFilters = ({ status, customer_id, search, quick_access, exclude_
 //               ?page=  ?limit=  (server-side pagination)
 //               ?exclude_status=Completed,Cancelled  (exclude specific statuses)
 router.get('/', async (req, res) => {
-  const { status, customer_id, search, quick_access, exclude_status } = req.query;
+  const { status, customer_id, search, quick_access, exclude_status, sort_by, sort_order } = req.query;
   const page = req.query.page ? parseInt(req.query.page, 10) : null;
   const limit = req.query.limit ? parseInt(req.query.limit, 10) : null;
   const isPaginated = page !== null && limit !== null && page > 0 && limit > 0;
+
+  // Allowed sort fields mapping
+  const sortFieldMap = {
+    order_id: 'o.order_id',
+    created_at: 'o.created_at',
+    pickup_date: 'o.pickup_date',
+    final_length: 'CAST(o.final_length AS DECIMAL(10,2))',
+  };
+
+  const sortField = sortFieldMap[sort_by] || 'o.created_at';
+  const sortDir = (sort_order && sort_order.toUpperCase() === 'ASC') ? 'ASC' : 'DESC';
+  const orderByClause = `ORDER BY ${sortField} ${sortDir}`;
 
   // Filter with status included (used for data & total count)
   const { where: whereClause, params: whereParams } = buildOrderFilters({
@@ -122,7 +143,7 @@ router.get('/', async (req, res) => {
         FROM prixel_orders o
         LEFT JOIN prixel_customers c ON c.id = o.customer_id
         ${whereClause}
-        ORDER BY o.created_at DESC
+        ${orderByClause}
         LIMIT ? OFFSET ?
       `;
 
@@ -163,7 +184,7 @@ router.get('/', async (req, res) => {
         FROM prixel_orders o
         LEFT JOIN prixel_customers c ON c.id = o.customer_id
         ${whereClause}
-        ORDER BY o.created_at DESC
+        ${orderByClause}
       `;
       const [results] = await db.query(sql, whereParams);
 
